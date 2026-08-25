@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional
 
 from .classes.depot import Depot
 from .classes.line import Line
@@ -36,3 +37,29 @@ class ProblemInstance:
 
     def add_deadhead(self, deadhead: DeadheadTrip) -> None:
         self.deadheads[(deadhead.origin_stop, deadhead.destination_stop)]= deadhead
+
+
+
+#GETTERS
+    def get_trip(self, trip_id: str) -> Optional[Trip]:
+        return self.trips.get(trip_id)
+
+    def get_depot(self, depot_id: str) -> Optional[Depot]:
+        return self.depots.get(depot_id)
+
+    def get_vehicle(self, vehicle_id: str) -> Optional[Vehicle]:
+        return self.vehicles.get(vehicle_id)
+
+    def get_line(self, line_id: str) -> Optional[Line]:
+        return self.lines.get(line_id)
+
+    def get_deadhead(self, origin_stop: str, destination_stop: str) -> Optional[DeadheadTrip]:
+        return self.deadheads.get((origin_stop, destination_stop))
+
+#SORTERS
+
+    def get_trips_sorted_by_start_time(self) -> list[Trip]:
+        return sorted(self.trips.values(), key=lambda trip: trip.start_time)
+
+    def get_trips_sorted_by_end_time(self) -> list[Trip]:
+        return sorted(self.trips.values(), key=lambda trip: trip.end_time)
