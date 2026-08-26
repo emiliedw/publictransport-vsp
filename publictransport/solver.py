@@ -14,7 +14,7 @@ class Solver:
         self.instance = instance
         self.objective = objective
 
-    def solve(self)-> Solution:
+    def solve(self, trip_shifting: bool=False)-> Solution:
 
         solution= Solution(instance=self.instance)
 
@@ -34,6 +34,8 @@ class Solver:
         for trip in trips:
             best_block= None
             best_cost= None
+            best_shift= 0 #time shift
+            max_shift_sec= trip.max_shift_minutes*60 if trip_shifting else 0
 
             for block in blocks:
                 last_scheduled= block.scheduled_trips[-1]
@@ -49,18 +51,24 @@ class Solver:
                         continue #incompatible: you can't reach it
                     cost= deadhead.duration_minutes*60 #turn minutes to seconds
 
-                available_gap= trip.start_time-last_scheduled.scheduled_end_time
-                if available_gap<cost:
-                    continue #you don't have time to get there
+                gap= trip.start_time-last_scheduled.scheduled_end_time
+
+                if gap>=cost:
+                    required_shift=0
+                else:
+                    required_shift=cost-gap
+                    if required_shift>max_shift_sec:
+                        continue
 
                 if best_block is None or cost<best_cost:
                     best_block= block
                     best_cost= cost
+                    best_shift= required_shift
 
             scheduled_trip= ScheduledTrip(
                 trip_id= trip.id,
-                scheduled_start_time=trip.start_time,
-                scheduled_end_time=trip.end_time,
+                scheduled_start_time=trip.start_time+best_shift,
+                scheduled_end_time=trip.end_time+best_shift,
 
             )
 
