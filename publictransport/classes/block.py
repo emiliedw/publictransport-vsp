@@ -35,3 +35,14 @@ class Block:
 
         deadhead = instance.get_deadhead(last_trip.destination_stop, depot.location_stop_id)
         return deadhead is not None
+
+    def count_line_changes(self, instance) -> int:
+        """Number of times consecutive trips in this block switch lines."""
+        changes = 0
+        prev_line_id = None
+        for scheduled in self.scheduled_trips:
+            trip = instance.get_trip(scheduled.trip_id)
+            if prev_line_id is not None and trip.line_id != prev_line_id:
+                changes += 1
+            prev_line_id = trip.line_id
+        return changes
