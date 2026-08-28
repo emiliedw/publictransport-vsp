@@ -42,6 +42,7 @@ class Solver:
             best_block = None
             best_cost = None
             best_shift = 0
+            best_last_scheduled = None
             max_shift_sec = trip.max_shift_minutes * 60 if trip_shifting else 0
 
             preferred_type = self._preferred_vehicle_type(trip)
@@ -67,7 +68,9 @@ class Solver:
                 gap = trip.start_time - last_scheduled.scheduled_end_time
 
                 if gap >= cost:
-                    required_shift = 0
+                    slack = gap - cost
+                    earlier_shift = min(slack, max_shift_sec)
+                    required_shift = -earlier_shift if earlier_shift > 0 else 0
                 else:
                     required_shift = cost - gap
                     if required_shift > max_shift_sec:
@@ -93,6 +96,7 @@ class Solver:
                     best_block = block
                     best_cost = cost
                     best_shift = required_shift
+                    best_last_scheduled = last_scheduled
 
             scheduled_trip = ScheduledTrip(
                 trip_id=trip.id,
@@ -103,7 +107,7 @@ class Solver:
             if best_block is not None:
                 best_block.add_trip(scheduled_trip)
                 if best_block.vehicle_type == VehicleType.ELECTRIC:
-                    idle_start = last_scheduled.scheduled_end_time + best_cost  # after arriving (deadhead or none)
+                    idle_start = best_last_scheduled.scheduled_end_time + best_cost
                     idle_end = scheduled_trip.scheduled_start_time
                     best_block.try_charge_at_stop(self.instance, trip.origin_stop, idle_start, idle_end)
             else:
