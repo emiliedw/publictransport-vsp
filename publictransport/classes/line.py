@@ -8,4 +8,3 @@ class Line:
     id: str
     name: str
     is_circular: bool = False
-    vehicle_type_preference: dict[VehicleType, int] = field(default_factory=dict)

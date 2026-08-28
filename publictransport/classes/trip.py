@@ -11,12 +11,13 @@ class Trip:
     direction: str
     origin_stop: str
     destination_stop: str
+    distance_km: float = 0.0   # NEW — required for energy consumption calc
 
-    max_shift_minutes: int=5
-    vehicle_type_preference: dict[VehicleType, int]= field(default_factory=dict) #this calls dict() fresh for each new isntance
+    max_shift_minutes: int = 5
+    vehicle_type_preference: dict[VehicleType, int] = field(default_factory=dict)
 
-    def duration(self)->int:
-        return self.end_time-self.start_time
+    def duration(self) -> int:
+        return self.end_time - self.start_time
 
 
 @dataclass

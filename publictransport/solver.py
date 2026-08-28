@@ -15,78 +15,79 @@ class Solver:
         self.instance = instance
         self.objective = objective
 
-    def _preferred_vehicle_type(trip) -> VehicleType:
+    def _preferred_vehicle_type(self, trip) -> VehicleType:
         if not trip.vehicle_type_preference:
             return VehicleType.CONVENTIONAL
         return max(trip.vehicle_type_preference, key=trip.vehicle_type_preference.get)
 
-    def solve(self, trip_shifting: bool=False)-> Solution:
+    def solve(self, trip_shifting: bool = False) -> Solution:
 
-        solution= Solution(instance=self.instance)
+        solution = Solution(instance=self.instance)
 
-        ## STEP 1: sort trips by ascending start_time
-        trips= self.instance.get_trips_sorted_by_start_time()
+        trips = self.instance.get_trips_sorted_by_start_time()
 
-        ## STEP 2: create an empty list of blocks
-        blocks: list[Block]= []
-        next_block_id= 1
+        blocks: list[Block] = []
+        next_block_id = 1
         home_depot = next(iter(self.instance.depots.values()), None)
         if home_depot is None:
             raise ValueError("No depot defined in this ProblemInstance — cannot assign a home depot to blocks.")
 
-
-        ## STEP 3: walk through trips in time order, for each one: slot it into the bus that reaches it soones or start a new bus if none can
-        ## for each trip
-        ##    best_block <- none
-        ##    best_cost <- none
-        ##    for each existing block:
-        ##
         for trip in trips:
-            best_block= None
-            best_cost= None
-            best_shift= 0 #time shift
-            max_shift_sec= trip.max_shift_minutes*60 if trip_shifting else 0
+            best_block = None
+            best_cost = None
+            best_shift = 0
+            max_shift_sec = trip.max_shift_minutes * 60 if trip_shifting else 0
 
             preferred_type = self._preferred_vehicle_type(trip)
 
             for block in blocks:
                 if block.vehicle_type != preferred_type:
                     continue
-                last_scheduled= block.scheduled_trips[-1]
-                last_trip= self.instance.get_trip(last_scheduled.trip_id)
+                last_scheduled = block.scheduled_trips[-1]
+                last_trip = self.instance.get_trip(last_scheduled.trip_id)
 
-                if last_trip.destination_stop== trip.origin_stop: #no deadhead needed
-                    cost= 0
+                if last_trip.destination_stop == trip.origin_stop:
+                    cost = 0
+                    deadhead_km = 0.0
                 else:
-                    deadhead= self.instance.get_deadhead(
+                    deadhead = self.instance.get_deadhead(
                         last_trip.destination_stop, trip.origin_stop
                     )
                     if deadhead is None:
-                        continue #incompatible: you can't reach it
-                    cost= deadhead.duration_minutes*60 #turn minutes to seconds
+                        continue
+                    cost = deadhead.duration_minutes * 60
+                    deadhead_km = deadhead.distance_km
 
-                gap= trip.start_time-last_scheduled.scheduled_end_time
+                gap = trip.start_time - last_scheduled.scheduled_end_time
 
-                if gap>=cost:
-                    required_shift=0
+                if gap >= cost:
+                    required_shift = 0
                 else:
-                    required_shift=cost-gap
-                    if required_shift>max_shift_sec:
+                    required_shift = cost - gap
+                    if required_shift > max_shift_sec:
                         continue
 
-                if best_block is None or cost<best_cost:
-                    best_block= block
-                    best_cost= cost
-                    best_shift= required_shift
+                if block.vehicle_type == VehicleType.ELECTRIC:
+                    params = self.instance.get_vehicle_type_params(VehicleType.ELECTRIC)
+                    consumed_so_far = block.energy_consumed_kwh(self.instance, params.consumption_kwh_per_km)
+                    projected_consumed = consumed_so_far + (deadhead_km + trip.distance_km) * params.consumption_kwh_per_km
+                    remaining_soc = params.battery_capacity_kwh - projected_consumed
+                    min_soc_kwh = params.min_soc_fraction * params.battery_capacity_kwh
+                    if remaining_soc < min_soc_kwh:
+                        continue  # not enough range left, this block can't take the trip
+                # --- end new ---
 
-            scheduled_trip= ScheduledTrip(
-                trip_id= trip.id,
-                scheduled_start_time=trip.start_time+best_shift,
-                scheduled_end_time=trip.end_time+best_shift,
+                if best_block is None or cost < best_cost:
+                    best_block = block
+                    best_cost = cost
+                    best_shift = required_shift
 
+            scheduled_trip = ScheduledTrip(
+                trip_id=trip.id,
+                scheduled_start_time=trip.start_time + best_shift,
+                scheduled_end_time=trip.end_time + best_shift,
             )
 
-            #if best block is found: add it, else: create new block
             if best_block is not None:
                 best_block.add_trip(scheduled_trip)
             else:
@@ -95,11 +96,9 @@ class Solver:
                 new_block.add_trip(scheduled_trip)
                 blocks.append(new_block)
 
-        ## STEP 4: return the blocks
         for block in blocks:
             solution.add_block(block)
             if not block.can_return_to_depot(self.instance):
                 print(f"warning: {block.id} cannot return to its home depot ({block.depot_id})")
-
 
         return solution
