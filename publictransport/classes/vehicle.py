@@ -7,7 +7,6 @@ class Vehicle:
     id: str
     vehicle_type: VehicleType
     home_depot_id: str
-    battery_capacity_kwh: Optional[float] = None
 
     def is_electric(self) -> bool:
         return self.vehicle_type == VehicleType.ELECTRIC

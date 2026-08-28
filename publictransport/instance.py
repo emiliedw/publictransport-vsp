@@ -7,7 +7,8 @@ from .classes.trip import Trip
 from .classes.vehicle import Vehicle
 from .classes.charger import Charger
 from .classes.deadhead_trip import DeadheadTrip
-
+from .classes.vehicle_type import VehicleType
+from .classes.vehicle_type_params import VehicleTypeParams
 
 @dataclass
 class ProblemInstance:
@@ -63,3 +64,11 @@ class ProblemInstance:
 
     def get_trips_sorted_by_end_time(self) -> list[Trip]:
         return sorted(self.trips.values(), key=lambda trip: trip.end_time)
+
+    vehicle_type_params: dict[VehicleType, VehicleTypeParams] = field(default_factory=dict)
+
+    def add_vehicle_type_params(self, params: VehicleTypeParams) -> None:
+        self.vehicle_type_params[params.vehicle_type] = params
+
+    def get_vehicle_type_params(self, vehicle_type: VehicleType) -> Optional[VehicleTypeParams]:
+        return self.vehicle_type_params.get(vehicle_type)
