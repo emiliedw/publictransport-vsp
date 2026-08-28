@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from .trip import ScheduledTrip
 from .charging_event import ChargingEvent
 from .vehicle_type import VehicleType
+from .charging_event import ChargingEvent
 
 class Block:
     def __init__(self, id: str, depot_id: str, vehicle_type: VehicleType, vehicle_id: str = ""):
@@ -63,3 +64,26 @@ class Block:
 
     def remaining_soc_kwh(self, instance, params) -> float:
         return params.battery_capacity_kwh - self.energy_consumed_kwh(instance, params.consumption_kwh_per_km)
+
+    def try_charge_at_stop(self, instance, stop_id: str, window_start: int, window_end: int) -> bool:
+        """Attempt to charge during an idle window at a stop. Returns True if a charge was inserted."""
+        available_seconds = window_end - window_start
+        if available_seconds <= 0:
+            return False
+
+        for charger in instance.get_chargers_at_location(stop_id):
+            min_needed_seconds = charger.min_charging_minutes * 60
+            if available_seconds < min_needed_seconds:
+                continue  # not enough time at this charger — charging is not initiated
+
+            energy_added = (available_seconds / 3600) * charger.charging_rate_kw
+            self.add_charging_event(ChargingEvent(
+                vehicle_id=self.vehicle_id,
+                charger_id=charger.id,
+                start_time=window_start,
+                end_time=window_end,
+                energy_added_kwh=energy_added,
+            ))
+            return True
+
+        return False  # no charger here met the minimum-time requirement

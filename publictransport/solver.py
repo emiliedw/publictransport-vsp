@@ -90,6 +90,10 @@ class Solver:
 
             if best_block is not None:
                 best_block.add_trip(scheduled_trip)
+                if best_block.vehicle_type == VehicleType.ELECTRIC:
+                    idle_start = last_scheduled.scheduled_end_time + best_cost  # after arriving (deadhead or none)
+                    idle_end = scheduled_trip.scheduled_start_time
+                    best_block.try_charge_at_stop(self.instance, trip.origin_stop, idle_start, idle_end)
             else:
                 new_block = Block(id=f"block_{next_block_id}", depot_id=home_depot.id, vehicle_type=preferred_type)
                 next_block_id += 1

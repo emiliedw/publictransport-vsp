@@ -72,3 +72,6 @@ class ProblemInstance:
 
     def get_vehicle_type_params(self, vehicle_type: VehicleType) -> Optional[VehicleTypeParams]:
         return self.vehicle_type_params.get(vehicle_type)
+
+    def get_chargers_at_location(self, location_id: str) -> list[Charger]:
+        return [c for c in self.chargers.values() if c.location_id == location_id]
