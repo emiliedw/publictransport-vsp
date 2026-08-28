@@ -32,3 +32,23 @@ class Solution:
         )
         print(f"trips per block (largest first): {block_sizes[:10]}{'...' if len(block_sizes) > 10 else ''}")
         print(f"average trips per block: {sum(block_sizes) / len(block_sizes):.1f}")
+        gaps = self.fleet_gap_report()
+        if gaps:
+            print("\nfleet shortfalls (planned blocks exceed available vehicles):")
+            for (depot_id, vehicle_type), shortfall in gaps.items():
+                print(f"  depot {depot_id}, {vehicle_type.name}: short by {shortfall} vehicle(s)")
+
+    def fleet_gap_report(self) -> dict[tuple[str, "VehicleType"], int]:
+        planned_counts: dict[tuple[str, "VehicleType"], int] = {}
+        for block in self.blocks.values():
+            key = (block.depot_id, block.vehicle_type)
+            planned_counts[key] = planned_counts.get(key, 0) + 1
+
+        gaps = {}
+        for (depot_id, vehicle_type), planned in planned_counts.items():
+            depot = self.instance.get_depot(depot_id)
+            available = depot.fleet_capacity.get(vehicle_type, 0) if depot else 0
+            gap = planned - available
+            if gap > 0:
+                gaps[(depot_id, vehicle_type)] = gap
+        return gaps

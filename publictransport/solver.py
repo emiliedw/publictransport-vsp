@@ -20,6 +20,14 @@ class Solver:
             return VehicleType.CONVENTIONAL
         return max(trip.vehicle_type_preference, key=trip.vehicle_type_preference.get)
 
+    def _select_home_depot(self, vehicle_type: VehicleType):
+        """Pick a depot that actually has capacity for this vehicle type, if any."""
+        for depot in self.instance.depots.values():
+            if depot.fleet_capacity.get(vehicle_type, 0) > 0:
+                return depot
+        return None
+
+
     def solve(self, trip_shifting: bool = False) -> Solution:
 
         solution = Solution(instance=self.instance)
@@ -28,9 +36,7 @@ class Solver:
 
         blocks: list[Block] = []
         next_block_id = 1
-        home_depot = next(iter(self.instance.depots.values()), None)
-        if home_depot is None:
-            raise ValueError("No depot defined in this ProblemInstance — cannot assign a home depot to blocks.")
+        block_count_by_type: dict[VehicleType, int] = {}
 
         for trip in trips:
             best_block = None
@@ -69,13 +75,19 @@ class Solver:
 
                 if block.vehicle_type == VehicleType.ELECTRIC:
                     params = self.instance.get_vehicle_type_params(VehicleType.ELECTRIC)
-                    consumed_so_far = block.energy_consumed_kwh(self.instance, params.consumption_kwh_per_km)
-                    projected_consumed = consumed_so_far + (deadhead_km + trip.distance_km) * params.consumption_kwh_per_km
+                    hour = (trip.start_time // 3600) % 24
+
+                    consumed_so_far = block.energy_consumed_kwh(self.instance, params.consumption_profile)
+
+                    deadhead_rate = params.consumption_profile.consumption_kwh_per_km(hour=hour)
+                    trip_rate = params.consumption_profile.consumption_kwh_per_km(line_id=trip.line_id, hour=hour)
+                    projected_added = deadhead_km * deadhead_rate + trip.distance_km * trip_rate
+
+                    projected_consumed = consumed_so_far + projected_added
                     remaining_soc = params.battery_capacity_kwh - projected_consumed
                     min_soc_kwh = params.min_soc_fraction * params.battery_capacity_kwh
                     if remaining_soc < min_soc_kwh:
                         continue  # not enough range left, this block can't take the trip
-                # --- end new ---
 
                 if best_block is None or cost < best_cost:
                     best_block = block
@@ -95,10 +107,24 @@ class Solver:
                     idle_end = scheduled_trip.scheduled_start_time
                     best_block.try_charge_at_stop(self.instance, trip.origin_stop, idle_start, idle_end)
             else:
-                new_block = Block(id=f"block_{next_block_id}", depot_id=home_depot.id, vehicle_type=preferred_type)
+                params = self.instance.get_vehicle_type_params(preferred_type)
+                max_blocks = params.max_virtual_blocks if params else None
+                current_count = block_count_by_type.get(preferred_type, 0)
+
+                if max_blocks is not None and current_count >= max_blocks:
+                    solution.unassigned_trip_ids.append(trip.id)
+                    continue
+                depot = self._select_home_depot(preferred_type)
+                if depot is None:
+                    solution.unassigned_trip_ids.append(trip.id)
+                    continue  # no depot has this vehicle type — can't open a block
+
+                new_block = Block(id=f"block_{next_block_id}", depot_id=depot.id, vehicle_type=preferred_type)
                 next_block_id += 1
                 new_block.add_trip(scheduled_trip)
                 blocks.append(new_block)
+                block_count_by_type[preferred_type] = current_count + 1
+
 
         for block in blocks:
             solution.add_block(block)
