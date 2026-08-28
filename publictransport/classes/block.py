@@ -48,22 +48,29 @@ class Block:
             prev_line_id = trip.line_id
         return changes
 
-    def energy_consumed_kwh(self, instance, consumption_kwh_per_km: float) -> float:
+    def energy_consumed_kwh(self, instance, consumption_profile) -> float:
         """Total energy used so far: all scheduled trips' distances + any deadheads between them."""
-        total_km = 0.0
+        total_kwh = 0.0
         prev_trip = None
+
         for scheduled in self.scheduled_trips:
             trip = instance.get_trip(scheduled.trip_id)
+            hour = (scheduled.scheduled_start_time // 3600) % 24
+
             if prev_trip is not None and prev_trip.destination_stop != trip.origin_stop:
                 deadhead = instance.get_deadhead(prev_trip.destination_stop, trip.origin_stop)
                 if deadhead is not None:
-                    total_km += deadhead.distance_km
-            total_km += trip.distance_km
+                    rate = consumption_profile.consumption_kwh_per_km(hour=hour)
+                    total_kwh += deadhead.distance_km * rate
+
+            rate = consumption_profile.consumption_kwh_per_km(line_id=trip.line_id, hour=hour)
+            total_kwh += trip.distance_km * rate
+
             prev_trip = trip
-        return total_km * consumption_kwh_per_km
+        return total_kwh
 
     def remaining_soc_kwh(self, instance, params) -> float:
-        return params.battery_capacity_kwh - self.energy_consumed_kwh(instance, params.consumption_kwh_per_km)
+        return params.battery_capacity_kwh - self.energy_consumed_kwh(instance, params.consumption_profile)
 
     def try_charge_at_stop(self, instance, stop_id: str, window_start: int, window_end: int) -> bool:
         """Attempt to charge during an idle window at a stop. Returns True if a charge was inserted."""
