@@ -5,7 +5,7 @@ import time
 
 instance = load_from_xml("data/Katowice_2026-26-3_15-08-26.xml")
 print("trips loaded:", len(instance.trips))
-print("deadheads loaded:", len(instance.deadheads))
+print("deadheads created:", len(instance.deadheads))
 
 weights = ObjectiveWeights()
 objective = ObjectiveFunction(weights)

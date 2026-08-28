@@ -24,6 +24,10 @@ class Solver:
         ## STEP 2: create an empty list of blocks
         blocks: list[Block]= []
         next_block_id= 1
+        home_depot = next(iter(self.instance.depots.values()), None)
+        if home_depot is None:
+            raise ValueError("No depot defined in this ProblemInstance — cannot assign a home depot to blocks.")
+
 
         ## STEP 3: walk through trips in time order, for each one: slot it into the bus that reaches it soones or start a new bus if none can
         ## for each trip
@@ -75,14 +79,17 @@ class Solver:
             #if best block is found: add it, else: create new block
             if best_block is not None:
                 best_block.add_trip(scheduled_trip)
-            else:
-                new_block= Block(id=f"block_{next_block_id}", vehicle_id="", depot_id="")
-                next_block_id+=1
-                new_block.add_trip(scheduled_trip)
-                blocks.append(new_block)
+        else:
+            new_block = Block(id=f"block_{next_block_id}", depot_id=home_depot.id)
+            next_block_id += 1
+            new_block.add_trip(scheduled_trip)
+            blocks.append(new_block)
 
         ## STEP 4: return the blocks
         for block in blocks:
             solution.add_block(block)
+            if not block.can_return_to_depot(self.instance):
+                print(f"warning: {block.id} cannot return to its home depot ({block.depot_id})")
+
 
         return solution
