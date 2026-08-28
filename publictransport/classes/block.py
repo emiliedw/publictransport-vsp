@@ -1,13 +1,13 @@
 from dataclasses import dataclass, field
-
 from .trip import ScheduledTrip
 from .charging_event import ChargingEvent
-
+from .vehicle_type import VehicleType
 
 class Block:
-    def __init__(self, id: str, depot_id: str, vehicle_id: str = ""):
+    def __init__(self, id: str, depot_id: str, vehicle_type: VehicleType, vehicle_id: str = ""):
         self.id = id
         self.depot_id = depot_id
+        self.vehicle_type = vehicle_type
         self.vehicle_id = vehicle_id
         self.scheduled_trips = []
         self.charging_events = []

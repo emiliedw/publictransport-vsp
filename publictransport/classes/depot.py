@@ -8,6 +8,7 @@ class Depot:
     id: str
     name: str
     location_stop_id: str
-    fleet_capacity: dict[VehicleType, int] = field(default_factory=dict)
+    capacity: dict[VehicleType, int] = field(default_factory=dict)
+
     def available(self, vehicle_type: VehicleType)->int:
         return self.capacity.get(vehicle_type, 0)

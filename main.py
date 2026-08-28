@@ -3,7 +3,10 @@ from publictransport.objective import ObjectiveWeights, ObjectiveFunction
 from publictransport.solver import Solver
 import time
 
+from publictransport.classes.depot import Depot
+
 instance = load_from_xml("data/Katowice_2026-26-3_15-08-26.xml")
+instance.add_depot(Depot(id="depot_1", name="Placeholder Depot", location_stop_id="???"))
 print("trips loaded:", len(instance.trips))
 print("deadheads created:", len(instance.deadheads))
 

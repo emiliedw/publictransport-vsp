@@ -3,6 +3,7 @@ from .solution import Solution
 from .objective import ObjectiveFunction
 from .classes.block import Block
 from .classes.trip import ScheduledTrip
+from .classes.vehicle_type import VehicleType
 
 
 class Solver:
@@ -13,6 +14,11 @@ class Solver:
     def __init__(self, instance: ProblemInstance, objective: ObjectiveFunction) -> None:
         self.instance = instance
         self.objective = objective
+
+    def _preferred_vehicle_type(trip) -> VehicleType:
+        if not trip.vehicle_type_preference:
+            return VehicleType.CONVENTIONAL
+        return max(trip.vehicle_type_preference, key=trip.vehicle_type_preference.get)
 
     def solve(self, trip_shifting: bool=False)-> Solution:
 
@@ -41,7 +47,11 @@ class Solver:
             best_shift= 0 #time shift
             max_shift_sec= trip.max_shift_minutes*60 if trip_shifting else 0
 
+            preferred_type = self._preferred_vehicle_type(trip)
+
             for block in blocks:
+                if block.vehicle_type != preferred_type:
+                    continue
                 last_scheduled= block.scheduled_trips[-1]
                 last_trip= self.instance.get_trip(last_scheduled.trip_id)
 
@@ -79,11 +89,11 @@ class Solver:
             #if best block is found: add it, else: create new block
             if best_block is not None:
                 best_block.add_trip(scheduled_trip)
-        else:
-            new_block = Block(id=f"block_{next_block_id}", depot_id=home_depot.id)
-            next_block_id += 1
-            new_block.add_trip(scheduled_trip)
-            blocks.append(new_block)
+            else:
+                new_block = Block(id=f"block_{next_block_id}", depot_id=home_depot.id, vehicle_type=preferred_type)
+                next_block_id += 1
+                new_block.add_trip(scheduled_trip)
+                blocks.append(new_block)
 
         ## STEP 4: return the blocks
         for block in blocks:
