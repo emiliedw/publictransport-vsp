@@ -15,3 +15,6 @@ class VehicleTypeParams:
     min_soc_fraction: Optional[float] = None
     refuel_time_minutes: Optional[int] = None
     max_virtual_blocks: Optional[int] = None
+    min_break_seconds: int = 0
+    max_deadhead_seconds: Optional[int] = None
+    max_break_seconds: Optional[int] = None

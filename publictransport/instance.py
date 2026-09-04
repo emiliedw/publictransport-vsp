@@ -9,6 +9,7 @@ from .classes.charger import Charger
 from .classes.deadhead_trip import DeadheadTrip
 from .classes.vehicle_type import VehicleType
 from .classes.vehicle_type_params import VehicleTypeParams
+from .classes.timetable_zone import TimetableZones
 
 @dataclass
 class ProblemInstance:
@@ -17,6 +18,16 @@ class ProblemInstance:
     trips: dict[str, Trip]= field(default_factory=dict)
     vehicles: dict[str, Vehicle]= field(default_factory=dict)
     chargers: dict[str, Charger]= field(default_factory=dict)
+    timetable_zones: Optional[TimetableZones] = None
+    #speed parameters:
+    base_deadhead_speed_kmh: float = 25.0   # assumed operating speed for empty runs
+    deadhead_speed_coefficients: dict[int, float] = field(default_factory=dict)  # zone_index -> multiplier, from TimetableZones
+    operating_day_start_seconds: int = 5 * 3600
+
+    #stop IDs ~ driverr facilities and duty-time rules
+    stops_with_driver_facilities: set[str] = field(default_factory=set)
+    max_continuous_duty_seconds: int = 4 * 3600      # e.g. 4 hours before a break is due
+    min_statutory_break_seconds: int = 30 * 60
 
     #deadhead[(origin_stop, destination_stop)] -> DeadheadTrip
     deadheads: dict[tuple[str, str], DeadheadTrip] = field(default_factory=dict)
@@ -75,3 +86,24 @@ class ProblemInstance:
 
     def get_chargers_at_location(self, location_id: str) -> list[Charger]:
         return [c for c in self.chargers.values() if c.location_id == location_id]
+
+    #compute duration dynamically:
+    def get_deadhead_duration_seconds(self, origin_stop: str, destination_stop: str, at_time_seconds: int) -> Optional[float]:
+        deadhead = self.get_deadhead(origin_stop, destination_stop)
+        if deadhead is None:
+            return None
+
+        speed = self.base_deadhead_speed_kmh
+        if self.timetable_zones is not None:
+            zone_idx = self.timetable_zones.zone_index(at_time_seconds)
+            speed *= self.deadhead_speed_coefficients.get(zone_idx, 1.0)
+
+        if speed <= 0:
+            return None
+
+        hours = deadhead.distance_km / speed
+        return hours * 3600
+
+    #helper to normalize any raw time into "seconds since operating-day starts"
+    def seconds_since_day_start(self, time_seconds: int) -> int:
+        return (time_seconds - self.operating_day_start_seconds) % 86400

@@ -62,23 +62,48 @@ class Solver:
                     )
                     if deadhead is None:
                         continue
-                    cost = deadhead.duration_minutes * 60
+                    dynamic_cost = self.instance.get_deadhead_duration_seconds(
+                        last_trip.destination_stop, trip.origin_stop, trip.start_time
+                    )
+                    if dynamic_cost is None:
+                        continue
+                    cost = dynamic_cost
                     deadhead_km = deadhead.distance_km
+
+                params_for_type = self.instance.get_vehicle_type_params(preferred_type)
+
+                if params_for_type and params_for_type.max_deadhead_distance_km is not None:
+                    if deadhead_km > params_for_type.max_deadhead_distance_km:
+                        continue  # deadhead too long for this vehicle type
 
                 gap = trip.start_time - last_scheduled.scheduled_end_time
 
-                if gap >= cost:
-                    slack = gap - cost
-                    earlier_shift = min(slack, max_shift_sec)
+                min_break_sec = params_for_type.min_break_seconds if params_for_type else 0
+                effective_min_gap = cost + min_break_sec
+
+                max_break_sec = params_for_type.max_break_seconds if params_for_type else None
+                if max_break_sec is not None and gap > cost + max_break_sec:
+                    continue  # idle break too long for this vehicle type
+
+                if self.instance.timetable_zones is not None:
+                    max_earlier_zone, max_later_zone = self.instance.timetable_zones.max_shift_without_crossing(trip.start_time)
+                else:
+                    max_earlier_zone = max_later_zone = max_shift_sec
+
+                if gap >= effective_min_gap:
+                    slack = gap - effective_min_gap
+                    earlier_limit = min(max_shift_sec, max_earlier_zone)
+                    earlier_shift = min(slack, earlier_limit)
                     required_shift = -earlier_shift if earlier_shift > 0 else 0
                 else:
-                    required_shift = cost - gap
-                    if required_shift > max_shift_sec:
+                    required_shift = effective_min_gap - gap
+                    later_limit = min(max_shift_sec, max_later_zone)
+                    if required_shift > later_limit:
                         continue
 
                 if block.vehicle_type == VehicleType.ELECTRIC:
                     params = self.instance.get_vehicle_type_params(VehicleType.ELECTRIC)
-                    hour = (trip.start_time // 3600) % 24
+                    hour = (self.instance.seconds_since_day_start(trip.start_time) // 3600) % 24
 
                     consumed_so_far = block.energy_consumed_kwh(self.instance, params.consumption_profile)
 
@@ -97,7 +122,6 @@ class Solver:
                     best_cost = cost
                     best_shift = required_shift
                     best_last_scheduled = last_scheduled
-
             scheduled_trip = ScheduledTrip(
                 trip_id=trip.id,
                 scheduled_start_time=trip.start_time + best_shift,

@@ -73,15 +73,17 @@ class Block:
         return params.battery_capacity_kwh - self.energy_consumed_kwh(instance, params.consumption_profile)
 
     def try_charge_at_stop(self, instance, stop_id: str, window_start: int, window_end: int) -> bool:
-        """Attempt to charge during an idle window at a stop. Returns True if a charge was inserted."""
         available_seconds = window_end - window_start
         if available_seconds <= 0:
             return False
 
         for charger in instance.get_chargers_at_location(stop_id):
+            if not charger.is_available(window_start, window_end, instance.operating_day_start_seconds):
+                continue  # charger not operational during this window
+
             min_needed_seconds = charger.min_charging_minutes * 60
             if available_seconds < min_needed_seconds:
-                continue  # not enough time at this charger — charging is not initiated
+                continue
 
             energy_added = (available_seconds / 3600) * charger.charging_rate_kw
             self.add_charging_event(ChargingEvent(
@@ -93,4 +95,34 @@ class Block:
             ))
             return True
 
-        return False  # no charger here met the minimum-time requirement
+        return False
+
+
+    def count_statutory_break_violations(self, instance) -> int:
+        """Counts inter-trip breaks where continuous duty exceeded the max without
+        a sufficient break at a stop with driver facilities."""
+        violations = 0
+        duty_start = None
+        prev_end = None
+        prev_stop = None
+
+        for scheduled in self.scheduled_trips:
+            trip = instance.get_trip(scheduled.trip_id)
+
+            if duty_start is None:
+                duty_start = scheduled.scheduled_start_time
+            else:
+                gap = scheduled.scheduled_start_time - prev_end
+                duty_so_far = prev_end - duty_start
+
+                if duty_so_far >= instance.max_continuous_duty_seconds:
+                    has_facility = prev_stop in instance.stops_with_driver_facilities
+                    long_enough = gap >= instance.min_statutory_break_seconds
+                    if not (has_facility and long_enough):
+                        violations += 1
+                    duty_start = scheduled.scheduled_start_time  # reset after any break attempt
+
+            prev_end = scheduled.scheduled_end_time
+            prev_stop = trip.destination_stop
+
+        return violations
