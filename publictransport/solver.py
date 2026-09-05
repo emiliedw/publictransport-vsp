@@ -113,7 +113,7 @@ class Solver:
 
                     projected_consumed = consumed_so_far + projected_added
                     remaining_soc = params.battery_capacity_kwh - projected_consumed
-                    min_soc_kwh = params.min_soc_fraction * params.battery_capacity_kwh
+                    min_soc_kwh = params.min_soc_floor_kwh()
                     if remaining_soc < min_soc_kwh:
                         continue  # not enough range left, this block can't take the trip
 

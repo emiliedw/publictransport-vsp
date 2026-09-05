@@ -78,11 +78,14 @@ class Block:
 
         for charger in instance.get_chargers_at_location(stop_id):
             if not charger.is_available(window_start, window_end, instance.operating_day_start_seconds):
-                continue  # charger not operational during this window
+                continue
 
             min_needed_seconds = charger.min_charging_minutes * 60
             if available_seconds < min_needed_seconds:
                 continue
+
+            if not instance.is_charger_free(charger.id, window_start, window_end):
+                continue  # NEW — another vehicle is already using this charger during this window
 
             energy_added = (available_seconds / 3600) * charger.charging_rate_kw
             self.add_charging_event(ChargingEvent(
@@ -92,6 +95,7 @@ class Block:
                 end_time=window_end,
                 energy_added_kwh=energy_added,
             ))
+            instance.book_charger(charger.id, window_start, window_end)
             return True
 
         return False

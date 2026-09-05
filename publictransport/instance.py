@@ -118,3 +118,14 @@ class ProblemInstance:
         if from_line_id == to_line_id:
             return 0.0
         return self.line_change_preferences.get((from_line_id, to_line_id), 10.0)
+
+    charger_bookings: dict[str, list[tuple[int, int]]] = field(default_factory=dict)  # charger_id -> list of (start, end)
+
+    def is_charger_free(self, charger_id: str, window_start: int, window_end: int) -> bool:
+        for booked_start, booked_end in self.charger_bookings.get(charger_id, []):
+            if window_start < booked_end and booked_start < window_end:
+                return False  # overlap
+        return True
+
+    def book_charger(self, charger_id: str, window_start: int, window_end: int) -> None:
+        self.charger_bookings.setdefault(charger_id, []).append((window_start, window_end))
