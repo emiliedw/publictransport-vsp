@@ -9,9 +9,27 @@ class Solution:
     instance: ProblemInstance
     blocks: dict[str, Block] = field(default_factory=dict)
     unassigned_trip_ids: list[str] = field(default_factory=list)
+    assigned_trip_ids: set= field(default_factory= set, repr=False)
 
     def add_block(self, block: Block) -> None:
+        new_ids = {st.trip_id for st in block.scheduled_trips}
+        overlap = self.assigned_trip_ids & new_ids
+        if overlap:
+            raise ValueError(f"Trip(s) already assigned to another block: {overlap}")
+        self.assigned_trip_ids |= new_ids
         self.blocks[block.id] = block
+
+    def validate_trip_assignment_integrity(self) -> None:
+        assigned = {st.trip_id for b in self.blocks.values() for st in b.scheduled_trips}
+        unassigned = set(self.unassigned_trip_ids)
+        overlap = assigned & unassigned
+        if overlap:
+            raise ValueError(f"Trip(s) marked both assigned and unassigned: {overlap}")
+
+        all_trip_ids = set(self.instance.trips.keys())
+        missing = all_trip_ids - assigned - unassigned
+        if missing:
+            raise ValueError(f"Trip(s) neither assigned nor marked unassigned: {missing}")
 
     def num_blocks(self) -> int:
         return len(self.blocks)

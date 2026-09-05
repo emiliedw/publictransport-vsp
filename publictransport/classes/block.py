@@ -125,3 +125,63 @@ class Block:
             prev_stop = trip.destination_stop
 
         return violations
+
+    def line_change_penalty(self, instance) -> float:
+        """Sum of line-change penalties (0-10 scale each) between consecutive trips."""
+        total_penalty = 0.0
+        prev_line_id = None
+        for scheduled in self.scheduled_trips:
+            trip = instance.get_trip(scheduled.trip_id)
+            if prev_line_id is not None:
+                total_penalty += instance.get_line_change_penalty(prev_line_id, trip.line_id)
+            prev_line_id = trip.line_id
+        return total_penalty
+
+    def is_short_block(self, instance) -> bool:
+        return len(self.scheduled_trips) < instance.short_block_trip_threshold
+
+    def is_single_trip_block(self) -> bool:
+        return len(self.scheduled_trips) == 1
+
+    def vehicle_preference_penalty(self, instance) -> float:
+        """Sum over trips of (1 - normalized preference score) for the assigned vehicle type."""
+        total_penalty = 0.0
+        for scheduled in self.scheduled_trips:
+            trip = instance.get_trip(scheduled.trip_id)
+            prefs = trip.vehicle_type_preference
+            if not prefs:
+                continue  # no preference stated — neutral, no penalty
+            max_score = max(prefs.values())
+            if max_score <= 0:
+                continue
+            assigned_score = prefs.get(self.vehicle_type, 0)
+            total_penalty += 1.0 - (assigned_score / max_score)
+        return total_penalty
+
+    def total_shift_seconds(self, instance) -> float:
+        total = 0.0
+        for scheduled in self.scheduled_trips:
+            trip = instance.get_trip(scheduled.trip_id)
+            total += abs(scheduled.scheduled_start_time - trip.start_time)
+        return total
+
+    def total_max_shift_seconds(self, instance) -> float:
+        total = 0.0
+        for scheduled in self.scheduled_trips:
+            trip = instance.get_trip(scheduled.trip_id)
+            total += trip.max_shift_minutes * 60
+        return total
+
+    def duration_seconds(self) -> int:
+        if not self.scheduled_trips:
+            return 0
+        first = self.scheduled_trips[0]
+        last = self.scheduled_trips[-1]
+        return last.scheduled_end_time - first.scheduled_start_time
+
+    def meets_minimum_requirements(self, instance) -> bool:
+        if len(self.scheduled_trips) < instance.min_block_trips:
+            return False
+        if self.duration_seconds() < instance.min_block_duration_seconds:
+            return False
+        return True

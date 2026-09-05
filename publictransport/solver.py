@@ -158,5 +158,9 @@ class Solver:
             solution.add_block(block)
             if not block.can_return_to_depot(self.instance):
                 print(f"warning: {block.id} cannot return to its home depot ({block.depot_id})")
+            if not block.meets_minimum_requirements(self.instance):
+                print(f"warning: {block.id} does not meet minimum trips/duration requirements "
+                      f"({len(block.scheduled_trips)} trips, {block.duration_seconds()/60:.1f} min)")
 
+        solution.validate_trip_assignment_integrity()
         return solution

@@ -32,6 +32,9 @@ class ProblemInstance:
     #deadhead[(origin_stop, destination_stop)] -> DeadheadTrip
     deadheads: dict[tuple[str, str], DeadheadTrip] = field(default_factory=dict)
 
+    min_block_trips: int = 1
+    min_block_duration_seconds: int = 0
+
     def add_depot(self, depot: Depot) -> None:
         self.depots[depot.id]= depot
 
@@ -104,6 +107,14 @@ class ProblemInstance:
         hours = deadhead.distance_km / speed
         return hours * 3600
 
-    #helper to normalize any raw time into "seconds since operating-day starts"
+
     def seconds_since_day_start(self, time_seconds: int) -> int:
         return (time_seconds - self.operating_day_start_seconds) % 86400
+
+    line_change_preferences: dict[tuple[str, str], float] = field(default_factory=dict)  # (from_line, to_line) -> penalty in [0,10]
+    short_block_trip_threshold: int = 2
+
+    def get_line_change_penalty(self, from_line_id: str, to_line_id: str) -> float:
+        if from_line_id == to_line_id:
+            return 0.0
+        return self.line_change_preferences.get((from_line_id, to_line_id), 10.0)
