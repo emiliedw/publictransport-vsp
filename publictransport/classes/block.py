@@ -49,13 +49,12 @@ class Block:
         return changes
 
     def energy_consumed_kwh(self, instance, consumption_profile) -> float:
-        """Total energy used so far: all scheduled trips' distances + any deadheads between them."""
         total_kwh = 0.0
         prev_trip = None
 
         for scheduled in self.scheduled_trips:
             trip = instance.get_trip(scheduled.trip_id)
-            hour = (scheduled.scheduled_start_time // 3600) % 24
+            hour = (instance.seconds_since_day_start(scheduled.scheduled_start_time) // 3600) % 24
 
             if prev_trip is not None and prev_trip.destination_stop != trip.origin_stop:
                 deadhead = instance.get_deadhead(prev_trip.destination_stop, trip.origin_stop)
