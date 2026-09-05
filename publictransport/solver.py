@@ -8,9 +8,6 @@ from .classes.vehicle_type import VehicleType
 
 class Solver:
 
-    ## input: list op trips, deadhead table
-    ## output: list of blocks
-
     def __init__(self, instance: ProblemInstance, objective: ObjectiveFunction) -> None:
         self.instance = instance
         self.objective = objective
@@ -21,12 +18,10 @@ class Solver:
         return max(trip.vehicle_type_preference, key=trip.vehicle_type_preference.get)
 
     def _select_home_depot(self, vehicle_type: VehicleType):
-        """Pick a depot that actually has capacity for this vehicle type, if any."""
         for depot in self.instance.depots.values():
             if depot.fleet_capacity.get(vehicle_type, 0) > 0:
                 return depot
         return None
-
 
     def solve(self, trip_shifting: bool = False) -> Solution:
 
@@ -62,14 +57,6 @@ class Solver:
                     )
                     if deadhead is None:
                         continue
-
-                    if last_trip.direction and trip.direction and last_trip.direction == trip.direction:
-                        line = self.instance.get_line(trip.line_id)
-                        last_line = self.instance.get_line(last_trip.line_id)
-                        is_circular = (line and line.is_circular) or (last_line and last_line.is_circular)
-                        if not is_circular:
-                            continue
-
                     dynamic_cost = self.instance.get_deadhead_duration_seconds(
                         last_trip.destination_stop, trip.origin_stop, trip.start_time
                     )
@@ -78,22 +65,37 @@ class Solver:
                     cost = dynamic_cost
                     deadhead_km = deadhead.distance_km
 
+                if last_trip.direction and trip.direction and last_trip.direction == trip.direction:
+                    line = self.instance.get_line(trip.line_id)
+                    last_line = self.instance.get_line(last_trip.line_id)
+                    is_circular = (line and line.is_circular) or (last_line and last_line.is_circular)
+                    if not is_circular:
+                        continue
+
+                home_depot = self.instance.get_depot(block.depot_id)
+                if home_depot is not None:
+                    if trip.destination_stop != home_depot.location_stop_id:
+                        return_leg = self.instance.get_deadhead(trip.destination_stop, home_depot.location_stop_id)
+                        if return_leg is None:
+                            continue
+
                 params_for_type = self.instance.get_vehicle_type_params(preferred_type)
 
                 if params_for_type and params_for_type.max_deadhead_distance_km is not None:
                     if deadhead_km > params_for_type.max_deadhead_distance_km:
-                        continue  # deadhead too long for this vehicle type
+                        continue
 
                 gap = trip.start_time - last_scheduled.scheduled_end_time
 
                 tmin, tmax = self.instance.get_break_interval(last_trip, preferred_type)
                 effective_min_gap = cost + tmin
 
-                break_duration = gap - cost  # idle time after the deadhead completes
+                break_duration = gap - cost
                 is_split_block_break = break_duration >= self.instance.split_block_min_break_seconds
 
                 if not is_split_block_break and tmax is not None and break_duration > tmax:
                     continue
+
                 if self.instance.timetable_zones is not None:
                     max_earlier_zone, max_later_zone = self.instance.timetable_zones.max_shift_without_crossing(trip.start_time)
                 else:
@@ -124,13 +126,14 @@ class Solver:
                     remaining_soc = params.battery_capacity_kwh - projected_consumed
                     min_soc_kwh = params.min_soc_floor_kwh()
                     if remaining_soc < min_soc_kwh:
-                        continue  # not enough range left, this block can't take the trip
+                        continue
 
                 if best_block is None or cost < best_cost:
                     best_block = block
                     best_cost = cost
                     best_shift = required_shift
                     best_last_scheduled = last_scheduled
+
             scheduled_trip = ScheduledTrip(
                 trip_id=trip.id,
                 scheduled_start_time=trip.start_time + best_shift,
@@ -151,17 +154,23 @@ class Solver:
                 if max_blocks is not None and current_count >= max_blocks:
                     solution.unassigned_trip_ids.append(trip.id)
                     continue
+
                 depot = self._select_home_depot(preferred_type)
                 if depot is None:
                     solution.unassigned_trip_ids.append(trip.id)
-                    continue  # no depot has this vehicle type — can't open a block
+                    continue
+
+                if trip.destination_stop != depot.location_stop_id:
+                    return_leg = self.instance.get_deadhead(trip.destination_stop, depot.location_stop_id)
+                    if return_leg is None:
+                        solution.unassigned_trip_ids.append(trip.id)
+                        continue
 
                 new_block = Block(id=f"block_{next_block_id}", depot_id=depot.id, vehicle_type=preferred_type)
                 next_block_id += 1
                 new_block.add_trip(scheduled_trip)
                 blocks.append(new_block)
                 block_count_by_type[preferred_type] = current_count + 1
-
 
         for block in blocks:
             solution.add_block(block)
