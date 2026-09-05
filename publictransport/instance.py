@@ -129,3 +129,23 @@ class ProblemInstance:
 
     def book_charger(self, charger_id: str, window_start: int, window_end: int) -> None:
         self.charger_bookings.setdefault(charger_id, []).append((window_start, window_end))
+
+
+    split_block_min_break_seconds: int = 90 * 60
+
+    def get_break_interval(self, trip, vehicle_type) -> tuple[int, Optional[int]]:
+        if trip.min_break_seconds is not None or trip.max_break_seconds is not None:
+            tmin = trip.min_break_seconds if trip.min_break_seconds is not None else 0
+            tmax = trip.max_break_seconds
+            return tmin, tmax
+
+        line = self.get_line(trip.line_id)
+        if line is not None and (line.default_min_break_seconds is not None or line.default_max_break_seconds is not None):
+            tmin = line.default_min_break_seconds if line.default_min_break_seconds is not None else 0
+            tmax = line.default_max_break_seconds
+            return tmin, tmax
+
+        params = self.get_vehicle_type_params(vehicle_type)
+        tmin = params.min_break_seconds if params else 0
+        tmax = params.max_break_seconds if params else None
+        return tmin, tmax

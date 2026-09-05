@@ -62,6 +62,14 @@ class Solver:
                     )
                     if deadhead is None:
                         continue
+
+                    if last_trip.direction and trip.direction and last_trip.direction == trip.direction:
+                        line = self.instance.get_line(trip.line_id)
+                        last_line = self.instance.get_line(last_trip.line_id)
+                        is_circular = (line and line.is_circular) or (last_line and last_line.is_circular)
+                        if not is_circular:
+                            continue
+
                     dynamic_cost = self.instance.get_deadhead_duration_seconds(
                         last_trip.destination_stop, trip.origin_stop, trip.start_time
                     )
@@ -78,13 +86,14 @@ class Solver:
 
                 gap = trip.start_time - last_scheduled.scheduled_end_time
 
-                min_break_sec = params_for_type.min_break_seconds if params_for_type else 0
-                effective_min_gap = cost + min_break_sec
+                tmin, tmax = self.instance.get_break_interval(last_trip, preferred_type)
+                effective_min_gap = cost + tmin
 
-                max_break_sec = params_for_type.max_break_seconds if params_for_type else None
-                if max_break_sec is not None and gap > cost + max_break_sec:
-                    continue  # idle break too long for this vehicle type
+                break_duration = gap - cost  # idle time after the deadhead completes
+                is_split_block_break = break_duration >= self.instance.split_block_min_break_seconds
 
+                if not is_split_block_break and tmax is not None and break_duration > tmax:
+                    continue
                 if self.instance.timetable_zones is not None:
                     max_earlier_zone, max_later_zone = self.instance.timetable_zones.max_shift_without_crossing(trip.start_time)
                 else:

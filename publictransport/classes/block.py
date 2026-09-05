@@ -189,3 +189,17 @@ class Block:
         if self.duration_seconds() < instance.min_block_duration_seconds:
             return False
         return True
+
+    def has_direction_violation(self, instance) -> bool:
+        prev_trip = None
+        for scheduled in self.scheduled_trips:
+            trip = instance.get_trip(scheduled.trip_id)
+            if prev_trip is not None:
+                line = instance.get_line(trip.line_id)
+                prev_line = instance.get_line(prev_trip.line_id)
+                is_circular = (line and line.is_circular) or (prev_line and prev_line.is_circular)
+                if not is_circular and prev_trip.direction and trip.direction:
+                    if prev_trip.direction == trip.direction:
+                        return True
+            prev_trip = trip
+        return False

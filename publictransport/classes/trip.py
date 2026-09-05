@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-
+from typing import Optional
 from .vehicle_type import VehicleType
 
 @dataclass
@@ -11,8 +11,9 @@ class Trip:
     direction: str
     origin_stop: str
     destination_stop: str
-    distance_km: float = 0.0   # NEW — required for energy consumption calc
-
+    distance_km: float = 0.0   #required for energy consumption calc
+    min_break_seconds: Optional[int] = None   # tmin override for the break after this trip
+    max_break_seconds: Optional[int] = None  # tmax override
     max_shift_minutes: int = 5
     vehicle_type_preference: dict[VehicleType, int] = field(default_factory=dict)
 
