@@ -101,34 +101,35 @@ class Block:
         return False
 
 
-    def count_statutory_break_violations(self, instance) -> int:
-        """Counts inter-trip breaks where continuous duty exceeded the max without
-        a sufficient break at a stop with driver facilities."""
-        violations = 0
-        duty_start = None
+    def statutory_break_penalty(self, instance) -> float:
+        """Soft-constraint penalty: seconds of required statutory break not satisfied.
+        0.0 means fully compliant. Breaks may be split into segments >= min_break_component_seconds,
+        each of which must occur at a stop with driver facilities."""
+        if not self.scheduled_trips:
+            return 0.0
+
+        duty_seconds = self.duration_seconds()
+
+        required_break = 0
+        for threshold_seconds, break_needed in sorted(instance.duty_break_thresholds):
+            if duty_seconds > threshold_seconds:
+                required_break = break_needed
+        if required_break == 0:
+            return 0.0  # duty under the lowest threshold — no break required
+
+        qualifying_break = 0
         prev_end = None
         prev_stop = None
-
         for scheduled in self.scheduled_trips:
             trip = instance.get_trip(scheduled.trip_id)
-
-            if duty_start is None:
-                duty_start = scheduled.scheduled_start_time
-            else:
+            if prev_end is not None:
                 gap = scheduled.scheduled_start_time - prev_end
-                duty_so_far = prev_end - duty_start
-
-                if duty_so_far >= instance.max_continuous_duty_seconds:
-                    has_facility = prev_stop in instance.stops_with_driver_facilities
-                    long_enough = gap >= instance.min_statutory_break_seconds
-                    if not (has_facility and long_enough):
-                        violations += 1
-                    duty_start = scheduled.scheduled_start_time  # reset after any break attempt
-
+                if gap >= instance.min_break_component_seconds and prev_stop in instance.stops_with_driver_facilities:
+                    qualifying_break += gap
             prev_end = scheduled.scheduled_end_time
             prev_stop = trip.destination_stop
 
-        return violations
+        return max(0, required_break - qualifying_break)
 
     def line_change_penalty(self, instance) -> float:
         """Sum of line-change penalties (0-10 scale each) between consecutive trips."""
@@ -148,18 +149,15 @@ class Block:
         return len(self.scheduled_trips) == 1
 
     def vehicle_preference_penalty(self, instance) -> float:
-        """Sum over trips of (1 - normalized preference score) for the assigned vehicle type."""
+        """Sum over trips of (1 - score/10) for the assigned vehicle type, on a fixed 0-10 scale."""
         total_penalty = 0.0
         for scheduled in self.scheduled_trips:
             trip = instance.get_trip(scheduled.trip_id)
             prefs = trip.vehicle_type_preference
             if not prefs:
-                continue  # no preference stated — neutral, no penalty
-            max_score = max(prefs.values())
-            if max_score <= 0:
                 continue
-            assigned_score = prefs.get(self.vehicle_type, 0)
-            total_penalty += 1.0 - (assigned_score / max_score)
+            score = prefs.get(self.vehicle_type, 0)
+            total_penalty += 1.0 - (score / 10.0)
         return total_penalty
 
     def total_shift_seconds(self, instance) -> float:
@@ -203,3 +201,118 @@ class Block:
                         return True
             prev_trip = trip
         return False
+
+    def overcharging_penalty_kwh(self, instance, params) -> float:
+        """Soft-constraint penalty: sum of (SoC above ermax) at the start of each charging event."""
+        if params.max_soc_before_charging_fraction is None or params.battery_capacity_kwh is None:
+            return 0.0
+
+        threshold_kwh = params.max_soc_before_charging_fraction * params.battery_capacity_kwh
+        penalty = 0.0
+        consumed_kwh = 0.0
+        prev_trip = None
+
+        events_by_start = sorted(self.charging_events, key=lambda e: e.start_time)
+        event_idx = 0
+
+        for scheduled in self.scheduled_trips:
+            trip = instance.get_trip(scheduled.trip_id)
+            hour = (instance.seconds_since_day_start(scheduled.scheduled_start_time) // 3600) % 24
+
+            if prev_trip is not None and prev_trip.destination_stop != trip.origin_stop:
+                deadhead = instance.get_deadhead(prev_trip.destination_stop, trip.origin_stop)
+                if deadhead is not None:
+                    rate = params.consumption_profile.consumption_kwh_per_km(hour=hour)
+                    consumed_kwh += deadhead.distance_km * rate
+
+            # any charging events that occur before this trip starts, in order
+            while event_idx < len(events_by_start) and events_by_start[event_idx].start_time <= scheduled.scheduled_start_time:
+                event = events_by_start[event_idx]
+                remaining_soc = params.battery_capacity_kwh - consumed_kwh
+                if remaining_soc > threshold_kwh:
+                    penalty += remaining_soc - threshold_kwh
+                consumed_kwh -= event.energy_added_kwh  # charging reduces "consumed" (tops the battery back up)
+                event_idx += 1
+
+            rate = params.consumption_profile.consumption_kwh_per_km(line_id=trip.line_id, hour=hour)
+            consumed_kwh += trip.distance_km * rate
+            prev_trip = trip
+
+        # any remaining charging events after the last trip
+        while event_idx < len(events_by_start):
+            event = events_by_start[event_idx]
+            remaining_soc = params.battery_capacity_kwh - consumed_kwh
+            if remaining_soc > threshold_kwh:
+                penalty += remaining_soc - threshold_kwh
+            consumed_kwh -= event.energy_added_kwh
+            event_idx += 1
+
+        return penalty
+
+    def line_change_count_excess(self, instance) -> int:
+        """Soft-constraint penalty: how many line changes exceed lzmax, if set."""
+        if instance.max_line_changes_per_block is None:
+            return 0
+        actual = self.count_line_changes(instance)
+        return max(0, actual - instance.max_line_changes_per_block)
+
+    def single_trip_break_excess_seconds(self, instance) -> int:
+        """Soft-constraint penalty: sum of (break duration - pbmax) for any break immediately
+        before or after a trip, where that break exceeds pbmax."""
+        if instance.max_single_trip_break_seconds is None or len(self.scheduled_trips) < 2:
+            return 0
+
+        total_excess = 0
+        for i in range(len(self.scheduled_trips) - 1):
+            current_end = self.scheduled_trips[i].scheduled_end_time
+            next_start = self.scheduled_trips[i + 1].scheduled_start_time
+            gap = next_start - current_end
+            if gap > instance.max_single_trip_break_seconds:
+                total_excess += gap - instance.max_single_trip_break_seconds
+
+        return total_excess
+
+    def long_break_depot_violation_seconds(self, instance) -> int:
+        """Soft-constraint penalty: for any break longer than br_max, seconds of non-compliance
+        with the configured depot-return policy (1=home, 2=nearest/any depot, 3=secured terminus)."""
+        if instance.br_max_seconds is None or len(self.scheduled_trips) < 2:
+            return 0
+
+        home_depot = instance.get_depot(self.depot_id)
+        total_violation = 0
+
+        for i in range(len(self.scheduled_trips) - 1):
+            current = self.scheduled_trips[i]
+            next_trip_sched = self.scheduled_trips[i + 1]
+            gap = next_trip_sched.scheduled_start_time - current.scheduled_end_time
+
+            if gap <= instance.br_max_seconds:
+                continue  # break not long enough to trigger the rule
+
+            trip_before = instance.get_trip(current.trip_id)
+            break_stop = trip_before.destination_stop
+
+            if instance.depot_return_policy == 1:
+                compliant = home_depot is not None and break_stop == home_depot.location_stop_id
+            elif instance.depot_return_policy == 2:
+                compliant = instance.is_at_any_depot(break_stop)
+            elif instance.depot_return_policy == 3:
+                compliant = break_stop in instance.stops_with_secured_parking
+            else:
+                compliant = True  # unrecognized policy — don't penalize
+
+            if not compliant:
+                total_violation += gap - instance.br_max_seconds
+
+        return total_violation
+
+    def starting_soc_kwh(self, instance, params) -> float:
+        """SoC at block start, after any overnight depot charging (constraint 30)."""
+        if params.battery_capacity_kwh is None:
+            return 0.0
+        if params.init_load_fraction is not None:
+            return params.init_load_fraction * params.battery_capacity_kwh
+        return params.battery_capacity_kwh  # no init_load specified — assume full charge, as before
+
+    def remaining_soc_kwh(self, instance, params) -> float:
+        return self.starting_soc_kwh(instance, params) - self.energy_consumed_kwh(instance, params.consumption_profile)

@@ -42,3 +42,4 @@ elapsed = time.time() - start_time
 print(f"blocks created: {solution.num_blocks()}")
 print(f"runtime: {elapsed:.2f} seconds")
 solution.print_summary()
+solution.export_gantt_json(r"C:\Users\emilie\IdeaProjects\public-transport\PublicTransport\results\gantt_data.json")

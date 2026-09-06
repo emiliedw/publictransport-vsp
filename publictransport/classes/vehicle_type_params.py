@@ -20,7 +20,8 @@ class VehicleTypeParams:
     max_break_seconds: Optional[int] = None
     min_soc_fraction: Optional[float] = None
     min_soc_absolute_kwh: Optional[float] = None
-
+    max_soc_before_charging_fraction: Optional[float] = None
+    init_load_fraction: Optional[float] = None   # init_load — SoC fraction after overnight depot charging; None = assume full
 
     def min_soc_floor_kwh(self) -> float:
         """Resolve the effective minimum SoC floor, preferring an explicit absolute value if given."""

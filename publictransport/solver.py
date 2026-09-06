@@ -15,7 +15,15 @@ class Solver:
     def _preferred_vehicle_type(self, trip) -> VehicleType:
         if not trip.vehicle_type_preference:
             return VehicleType.CONVENTIONAL
-        return max(trip.vehicle_type_preference, key=trip.vehicle_type_preference.get)
+        eligible = {vt: score for vt, score in trip.vehicle_type_preference.items() if score > 0}
+        if not eligible:
+            return VehicleType.CONVENTIONAL  # no explicit eligible type stated — fall back
+        return max(eligible, key=eligible.get)
+
+    def _is_compatible(self, trip, vehicle_type: VehicleType) -> bool:
+        """A trip is incompatible with a vehicle type if it's explicitly scored 0."""
+        score = trip.vehicle_type_preference.get(vehicle_type)
+        return score != 0
 
     def _select_home_depot(self, vehicle_type: VehicleType):
         for depot in self.instance.depots.values():
@@ -45,6 +53,8 @@ class Solver:
             for block in blocks:
                 if block.vehicle_type != preferred_type:
                     continue
+                if not self._is_compatible(trip, block.vehicle_type):
+                    continue
                 last_scheduled = block.scheduled_trips[-1]
                 last_trip = self.instance.get_trip(last_scheduled.trip_id)
 
@@ -65,6 +75,7 @@ class Solver:
                     cost = dynamic_cost
                     deadhead_km = deadhead.distance_km
 
+                # constraint 21: no two consecutive same-direction trips on a non-circular line
                 if last_trip.direction and trip.direction and last_trip.direction == trip.direction:
                     line = self.instance.get_line(trip.line_id)
                     last_line = self.instance.get_line(last_trip.line_id)
@@ -72,12 +83,9 @@ class Solver:
                     if not is_circular:
                         continue
 
-                home_depot = self.instance.get_depot(block.depot_id)
-                if home_depot is not None:
-                    if trip.destination_stop != home_depot.location_stop_id:
-                        return_leg = self.instance.get_deadhead(trip.destination_stop, home_depot.location_stop_id)
-                        if return_leg is None:
-                            continue
+                # constraint 27: this specific line-to-line change is forbidden (score 0)
+                if not self.instance.is_line_change_allowed(last_trip.line_id, trip.line_id):
+                    continue
 
                 params_for_type = self.instance.get_vehicle_type_params(preferred_type)
 
@@ -123,7 +131,8 @@ class Solver:
                     projected_added = deadhead_km * deadhead_rate + trip.distance_km * trip_rate
 
                     projected_consumed = consumed_so_far + projected_added
-                    remaining_soc = params.battery_capacity_kwh - projected_consumed
+                    remaining_soc = block.starting_soc_kwh(self.instance, params) - projected_consumed
+
                     min_soc_kwh = params.min_soc_floor_kwh()
                     if remaining_soc < min_soc_kwh:
                         continue
@@ -159,12 +168,6 @@ class Solver:
                 if depot is None:
                     solution.unassigned_trip_ids.append(trip.id)
                     continue
-
-                if trip.destination_stop != depot.location_stop_id:
-                    return_leg = self.instance.get_deadhead(trip.destination_stop, depot.location_stop_id)
-                    if return_leg is None:
-                        solution.unassigned_trip_ids.append(trip.id)
-                        continue
 
                 new_block = Block(id=f"block_{next_block_id}", depot_id=depot.id, vehicle_type=preferred_type)
                 next_block_id += 1

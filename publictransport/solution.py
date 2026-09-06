@@ -2,7 +2,8 @@ from dataclasses import dataclass, field
 
 from .instance import ProblemInstance
 from .classes.block import Block
-
+import json
+from datetime import datetime, timedelta
 
 @dataclass
 class Solution:
@@ -70,3 +71,61 @@ class Solution:
             if gap > 0:
                 gaps[(depot_id, vehicle_type)] = gap
         return gaps
+
+
+
+
+    def to_gantt_data(self, base_date: str = "2026-01-01") -> list[dict]:
+        base = datetime.fromisoformat(base_date)
+
+        def to_iso(seconds: int) -> str:
+            return (base + timedelta(seconds=seconds)).isoformat()
+
+        records = []
+        for block in self.blocks.values():
+            prev_trip = None
+            prev_end = None
+
+            for scheduled in block.scheduled_trips:
+                trip = self.instance.get_trip(scheduled.trip_id)
+
+            # Insert a deadhead bar if there's a gap between where the previous
+            # trip ended and where this trip starts.
+                if prev_trip is not None and prev_trip.destination_stop != trip.origin_stop:
+                    records.append({
+                        "block": block.id,
+                        "vehicleType": block.vehicle_type.name,
+                        "trip": "deadhead",
+                        "startDate": to_iso(prev_end),
+                        "endDate": to_iso(scheduled.scheduled_start_time),
+                        "isDeadhead": True,
+                        "description": f"Deadhead: {prev_trip.destination_stop} -> {trip.origin_stop}",
+                    })
+
+                records.append({
+                    "block": block.id,
+                    "vehicleType": block.vehicle_type.name,
+                    "trip": f"{scheduled.trip_id} (Line {trip.line_id})",
+                    "startDate": to_iso(scheduled.scheduled_start_time),
+                    "endDate": to_iso(scheduled.scheduled_end_time),
+                    "isDeadhead": False,
+                    "description": (
+                        f"Line {trip.line_id}, {trip.origin_stop} -> {trip.destination_stop}, "
+                        f"direction {trip.direction}"
+                    ),
+                })
+
+                prev_trip = trip
+                prev_end = scheduled.scheduled_end_time
+
+        return records
+
+
+    def export_gantt_json(self, path: str = "gantt_data.json", base_date: str = "2026-01-01") -> None:
+        """Write to_gantt_data() output to a JSON file, ready to paste into the Observable `tasks` cell."""
+        import json
+        data = self.to_gantt_data(base_date=base_date)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        print(f"exported {len(data)} records ({sum(not r['isDeadhead'] for r in data)} trips, "
+              f"{sum(r['isDeadhead'] for r in data)} deadheads) to {path}")

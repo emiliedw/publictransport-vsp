@@ -24,10 +24,16 @@ class ProblemInstance:
     deadhead_speed_coefficients: dict[int, float] = field(default_factory=dict)  # zone_index -> multiplier, from TimetableZones
     operating_day_start_seconds: int = 5 * 3600
 
+    max_line_changes_per_block: Optional[int] = None
+    max_single_trip_break_seconds: Optional[int] = None
+
     #stop IDs ~ driverr facilities and duty-time rules
     stops_with_driver_facilities: set[str] = field(default_factory=set)
-    max_continuous_duty_seconds: int = 4 * 3600      # e.g. 4 hours before a break is due
-    min_statutory_break_seconds: int = 30 * 60
+    duty_break_thresholds: list[tuple[int, int]] = field(default_factory=lambda: [
+        (6 * 3600, 30 * 60),   # over 6h duty -> 30 min break required
+        (8 * 3600, 45 * 60),   # over 8h duty -> 45 min break required
+    ])
+    min_break_component_seconds: int = 15 * 60   # smallest break segment that counts (allows 3x15, 30+15, etc.)
 
     #deadhead[(origin_stop, destination_stop)] -> DeadheadTrip
     deadheads: dict[tuple[str, str], DeadheadTrip] = field(default_factory=dict)
@@ -149,3 +155,16 @@ class ProblemInstance:
         tmin = params.min_break_seconds if params else 0
         tmax = params.max_break_seconds if params else None
         return tmin, tmax
+
+    def is_line_change_allowed(self, from_line_id: str, to_line_id: str) -> bool:
+        if from_line_id == to_line_id:
+            return True
+        score = self.line_change_preferences.get((from_line_id, to_line_id))
+        return score != 0
+
+    br_max_seconds: Optional[int] = None       # br_max — break length that triggers the depot-return rule
+    depot_return_policy: int = 1               # 1 = home depot, 2 = nearest depot, 3 = no return if terminus allows
+    stops_with_secured_parking: set[str] = field(default_factory=set)  # termini with secured parking/social facility, for policy 3
+
+    def is_at_any_depot(self, stop_id: str) -> bool:
+        return any(depot.location_stop_id == stop_id for depot in self.depots.values())
