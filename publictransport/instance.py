@@ -170,7 +170,7 @@ class ProblemInstance:
     def get_line_change_penalty(self, from_line_id: str, to_line_id: str) -> float:
         if from_line_id == to_line_id:
             return 0.0
-        return self.line_change_preferences.get((from_line_id, to_line_id), 10.0)
+        return self.line_change_preferences.get((from_line_id, to_line_id), 5.0)
 
     def is_line_change_allowed(self, from_line_id: str, to_line_id: str) -> bool:
         if from_line_id == to_line_id:

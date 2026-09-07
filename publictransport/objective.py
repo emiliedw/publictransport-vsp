@@ -17,7 +17,7 @@ class ObjectiveWeights:
     overcharging_penalty: float = 0.0
     excess_line_changes: float = 0.0
     single_trip_break_excess: float = 0.0
-
+    long_break_depot_violation: float = 0.0
 class ObjectiveFunction:
     def __init__(self, weights: ObjectiveWeights) -> None:
         self.weights = weights
@@ -117,5 +117,3 @@ class ObjectiveFunction:
                 continue
             total_kwh += block.energy_consumed_kwh(instance, params.consumption_profile)
         return total_kwh
-
-    long_break_depot_violation: float = 0.0
