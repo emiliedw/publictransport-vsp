@@ -10,12 +10,16 @@ class Charger:
     location_id: str
     charging_rate_kw: float
     min_charging_minutes: int = 0
-    available_from_seconds: int = 0        # NEW — seconds since operating-day start
-    available_to_seconds: int = 86400      # NEW — seconds since operating-day start
+    available_from_seconds: int = 0
+    available_to_seconds: int = 86400
 
     def is_available(self, window_start: int, window_end: int, day_start_offset: int) -> bool:
         norm_start = (window_start - day_start_offset) % 86400
         norm_end = (window_end - day_start_offset) % 86400
         if norm_end < norm_start:
-            norm_end += 86400  # window crosses the day boundary
+            norm_end += 86400
         return norm_start >= self.available_from_seconds and norm_end <= self.available_to_seconds
+
+    def has_unlimited_capacity(self) -> bool:
+        """Per spec: depot chargers are assumed unlimited; only terminus chargers are booking-constrained."""
+        return self.location_type == ChargerLocationType.DEPOT

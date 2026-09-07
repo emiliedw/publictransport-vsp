@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from .solution import Solution
 from .classes.vehicle_type import VehicleType
 
-
 @dataclass
 class ObjectiveWeights:
     num_blocks: float = 1.0
@@ -18,6 +17,9 @@ class ObjectiveWeights:
     excess_line_changes: float = 0.0
     single_trip_break_excess: float = 0.0
     long_break_depot_violation: float = 0.0
+
+
+
 class ObjectiveFunction:
     def __init__(self, weights: ObjectiveWeights) -> None:
         self.weights = weights

@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 
 from .instance import ProblemInstance
 from .classes.block import Block
-import json
 from datetime import datetime, timedelta
 
 @dataclass
@@ -56,6 +55,135 @@ class Solution:
             print("\nfleet shortfalls (planned blocks exceed available vehicles):")
             for (depot_id, vehicle_type), shortfall in gaps.items():
                 print(f"  depot {depot_id}, {vehicle_type.name}: short by {shortfall} vehicle(s)")
+
+    def print_detailed_summary(self, objective: "ObjectiveFunction" = None) -> None:
+        """A fuller report than print_summary(): block stats, deadheads, line changes,
+        constraint sanity checks, trip shifting, electric fleet KPIs, and (optionally)
+        the weighted objective score if an ObjectiveFunction is passed in."""
+        from .classes.vehicle_type import VehicleType
+
+        blocks = list(self.blocks.values())
+        num_blocks = len(blocks)
+        num_trips = len(self.instance.trips)
+
+        print("\n" + "=" * 60)
+        print("SOLUTION SUMMARY")
+        print("=" * 60)
+
+        # ---- Basic counts ----
+        print(f"\nTotal trips in instance:      {num_trips}")
+        print(f"Trips assigned to blocks:     {len(self.assigned_trip_ids)}")
+        print(f"Unassigned trips:             {len(self.unassigned_trip_ids)}")
+        print(f"Total blocks:                 {num_blocks}")
+
+        if num_blocks == 0:
+            print("\nNo blocks to summarize.")
+            return
+
+        # ---- Block size stats ----
+        block_sizes = [len(b.scheduled_trips) for b in blocks]
+        print(f"\nTrips per block:")
+        print(f"  min / avg / max:            {min(block_sizes)} / {sum(block_sizes)/num_blocks:.1f} / {max(block_sizes)}")
+
+        # ---- Duration stats ----
+        durations_min = [b.duration_seconds() / 60 for b in blocks]
+        print(f"\nBlock duration (minutes):")
+        print(f"  min / avg / max:            {min(durations_min):.1f} / {sum(durations_min)/num_blocks:.1f} / {max(durations_min):.1f}")
+
+        # ---- Vehicle type breakdown ----
+        type_counts = {}
+        for b in blocks:
+            type_counts[b.vehicle_type] = type_counts.get(b.vehicle_type, 0) + 1
+        print(f"\nBlocks by vehicle type:")
+        for vt, count in sorted(type_counts.items(), key=lambda x: x[0].name):
+            print(f"  {vt.name:15s}             {count}")
+
+        # ---- Depot breakdown ----
+        depot_counts = {}
+        for b in blocks:
+            depot_counts[b.depot_id] = depot_counts.get(b.depot_id, 0) + 1
+        print(f"\nBlocks by depot:")
+        for depot_id, count in sorted(depot_counts.items()):
+            depot = self.instance.get_depot(depot_id)
+            name = depot.name if depot else depot_id
+            print(f"  {name:25s}   {count}")
+
+        # ---- Deadhead stats ----
+        total_deadheads = 0
+        total_deadhead_km = 0.0
+        for b in blocks:
+            prev_trip = None
+            for scheduled in b.scheduled_trips:
+                trip = self.instance.get_trip(scheduled.trip_id)
+                if prev_trip is not None and prev_trip.destination_stop != trip.origin_stop:
+                    dh = self.instance.get_deadhead(prev_trip.destination_stop, trip.origin_stop)
+                    if dh is not None:
+                        total_deadheads += 1
+                        total_deadhead_km += dh.distance_km
+                prev_trip = trip
+        print(f"\nDeadhead trips:                {total_deadheads}")
+        print(f"Total deadhead distance (km):  {total_deadhead_km:.1f}")
+
+        # ---- Line changes ----
+        total_line_changes = sum(b.count_line_changes(self.instance) for b in blocks)
+        total_line_change_penalty = sum(b.line_change_penalty(self.instance) for b in blocks)
+        print(f"\nLine changes total:            {total_line_changes}")
+        print(f"Line changes per block (avg):  {total_line_changes/num_blocks:.2f}")
+        print(f"Line change penalty (sum):     {total_line_change_penalty:.1f}")
+
+        # ---- Hard-constraint sanity checks ----
+        direction_violations = sum(1 for b in blocks if b.has_direction_violation(self.instance))
+        cannot_return = sum(1 for b in blocks if not b.can_return_to_depot(self.instance))
+        below_minimum = sum(1 for b in blocks if not b.meets_minimum_requirements(self.instance))
+        print(f"\nBlocks with direction violations:      {direction_violations}")
+        print(f"Blocks that cannot return to depot:    {cannot_return}")
+        print(f"Blocks below minimum requirements:     {below_minimum}")
+
+        # ---- Short / single-trip blocks ----
+        num_short = sum(1 for b in blocks if b.is_short_block(self.instance))
+        num_single = sum(1 for b in blocks if b.is_single_trip_block())
+        print(f"\nShort blocks (< {self.instance.short_block_trip_threshold} trips):        {num_short}")
+        print(f"Single-trip blocks:                    {num_single}")
+
+        # ---- Trip shifting ----
+        total_shift = sum(b.total_shift_seconds(self.instance) for b in blocks)
+        shifted_trip_count = sum(
+            1 for b in blocks for st in b.scheduled_trips
+            if st.scheduled_start_time != self.instance.get_trip(st.trip_id).start_time
+        )
+        print(f"\nTrips shifted from original time:      {shifted_trip_count}")
+        print(f"Total shift amount (minutes):          {total_shift/60:.1f}")
+        if shifted_trip_count:
+            print(f"Average shift per shifted trip (sec):  {total_shift/shifted_trip_count:.1f}")
+
+        # ---- Electric fleet / energy KPIs ----
+        electric_blocks = [b for b in blocks if b.vehicle_type == VehicleType.ELECTRIC]
+        if electric_blocks:
+            params = self.instance.get_vehicle_type_params(VehicleType.ELECTRIC)
+            total_kwh = (
+                sum(b.energy_consumed_kwh(self.instance, params.consumption_profile) for b in electric_blocks)
+                if params else 0.0
+            )
+            total_charging_events = sum(len(b.charging_events) for b in electric_blocks)
+            print(f"\nElectric blocks:                       {len(electric_blocks)}")
+            print(f"Total energy consumed (kWh):           {total_kwh:.1f}")
+            print(f"Total charging events:                 {total_charging_events}")
+
+        # ---- Fleet capacity gaps ----
+        gaps = self.fleet_gap_report()
+        if gaps:
+            print(f"\nFleet shortfalls (planned exceeds available):")
+            for (depot_id, vehicle_type), shortfall in gaps.items():
+                print(f"  depot {depot_id}, {vehicle_type.name}: short by {shortfall}")
+
+        # ---- Objective score (optional) ----
+        if objective is not None:
+            score = objective.evaluate(self)
+            env_kpi = objective.environmental_kpi(self)
+            print(f"\nObjective score (weighted, normalized 0-1): {score:.4f}")
+            print(f"Environmental KPI (total electric kWh):     {env_kpi:.1f}")
+
+        print("=" * 60 + "\n")
 
     def fleet_gap_report(self) -> dict[tuple[str, "VehicleType"], int]:
         planned_counts: dict[tuple[str, "VehicleType"], int] = {}
