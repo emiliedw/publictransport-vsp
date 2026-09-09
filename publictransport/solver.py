@@ -31,26 +31,25 @@ class Solver:
                 return depot
         return None
 
-    def _evaluate_trip_for_block(self, trip, block, trip_shifting: bool):
-        """Check whether `trip` can be appended to `block`, enforcing every constraint
-        the solver cares about. Returns (cost, required_shift, last_scheduled) if
-        feasible, or None if not. Extracted from the old single-block inner loop so
-        it can be reused across the lookahead window."""
-        if not self._is_compatible(trip, block.vehicle_type):
+    def _evaluate_trip_pair(self, prev_trip, trip, prev_end_time, vehicle_type, trip_shifting):
+        """Check whether `trip` can feasibly follow `prev_trip`, given the predecessor's
+        effective end time `prev_end_time`. Passing prev_trip.end_time gives a pairwise,
+        chain-history-independent check (used by the exact bipartite solver below);
+        passing a block's actual scheduled_end_time gives the chain-cumulative check
+        the windowed electric path needs. Returns (cost, required_shift, deadhead_km)
+        or None if infeasible."""
+        if not self._is_compatible(trip, vehicle_type):
             return None
 
-        last_scheduled = block.scheduled_trips[-1]
-        last_trip = self.instance.get_trip(last_scheduled.trip_id)
-
-        if last_trip.destination_stop == trip.origin_stop:
+        if prev_trip.destination_stop == trip.origin_stop:
             cost = 0
             deadhead_km = 0.0
         else:
-            deadhead = self.instance.get_deadhead(last_trip.destination_stop, trip.origin_stop)
+            deadhead = self.instance.get_deadhead(prev_trip.destination_stop, trip.origin_stop)
             if deadhead is None:
                 return None
             dynamic_cost = self.instance.get_deadhead_duration_seconds(
-                last_trip.destination_stop, trip.origin_stop, trip.start_time
+                prev_trip.destination_stop, trip.origin_stop, trip.start_time
             )
             if dynamic_cost is None:
                 return None
@@ -58,27 +57,25 @@ class Solver:
             deadhead_km = deadhead.distance_km
 
         # constraint 21: no two consecutive same-direction trips on a non-circular line
-        if last_trip.direction and trip.direction and last_trip.direction == trip.direction:
+        if prev_trip.direction and trip.direction and prev_trip.direction == trip.direction:
             line = self.instance.get_line(trip.line_id)
-            last_line = self.instance.get_line(last_trip.line_id)
-            is_circular = (line and line.is_circular) or (last_line and last_line.is_circular)
+            prev_line = self.instance.get_line(prev_trip.line_id)
+            is_circular = (line and line.is_circular) or (prev_line and prev_line.is_circular)
             if not is_circular:
                 return None
 
         # constraint 27: this specific line-to-line change is forbidden (score 0)
-        if not self.instance.is_line_change_allowed(last_trip.line_id, trip.line_id):
+        if not self.instance.is_line_change_allowed(prev_trip.line_id, trip.line_id):
             return None
 
-        preferred_type = block.vehicle_type
-        params_for_type = self.instance.get_vehicle_type_params(preferred_type)
-
+        params_for_type = self.instance.get_vehicle_type_params(vehicle_type)
         if params_for_type and params_for_type.max_deadhead_distance_km is not None:
             if deadhead_km > params_for_type.max_deadhead_distance_km:
                 return None
 
-        gap = trip.start_time - last_scheduled.scheduled_end_time
+        gap = trip.start_time - prev_end_time
 
-        tmin, tmax = self.instance.get_break_interval(last_trip, preferred_type)
+        tmin, tmax = self.instance.get_break_interval(prev_trip, vehicle_type)
         effective_min_gap = cost + tmin
 
         break_duration = gap - cost
@@ -88,23 +85,34 @@ class Solver:
             return None
 
         max_shift_sec = trip.max_shift_minutes * 60 if trip_shifting else 0
-
         if self.instance.timetable_zones is not None:
             _, max_later_zone = self.instance.timetable_zones.max_shift_without_crossing(trip.start_time)
         else:
             max_later_zone = max_shift_sec
 
         if gap >= effective_min_gap:
-            # Gap is already sufficient without any shift - leave the trip at its
-            # original time. Shifting here bought no feasibility, since deadhead
-            # cost doesn't change with shift; it only added unnecessary schedule
-            # disruption.
             required_shift = 0
         else:
             required_shift = effective_min_gap - gap
             later_limit = min(max_shift_sec, max_later_zone)
             if required_shift > later_limit:
                 return None
+
+        return cost, required_shift, deadhead_km
+
+    def _evaluate_trip_for_block(self, trip, block, trip_shifting):
+        """Chain-cumulative feasibility check for the windowed (electric) path - wraps
+        _evaluate_trip_pair using the block's actual (possibly already-shifted)
+        last scheduled end time, then layers the electric SoC check on top."""
+        last_scheduled = block.scheduled_trips[-1]
+        last_trip = self.instance.get_trip(last_scheduled.trip_id)
+
+        result = self._evaluate_trip_pair(
+            last_trip, trip, last_scheduled.scheduled_end_time, block.vehicle_type, trip_shifting
+        )
+        if result is None:
+            return None
+        cost, required_shift, deadhead_km = result
 
         if block.vehicle_type == VehicleType.ELECTRIC:
             params = self.instance.get_vehicle_type_params(VehicleType.ELECTRIC)
@@ -125,102 +133,193 @@ class Solver:
 
         return cost, required_shift, last_scheduled
 
-    def solve(self, trip_shifting: bool = False, lookahead_window: int = 5) -> Solution:
-        """Process trips in non-overlapping batches of `lookahead_window` trips. Within
-        each batch, every (trip, block) pair is evaluated once, and the cheapest
-        non-conflicting matches are committed together - a real reservation, not a
-        hypothetical one recomputed and possibly discarded later. This avoids the
-        earlier sliding-window design, where only the first trip's decision was
-        committed and every other "win" in the window was thrown away and
-        re-evaluated independently, which meant larger windows just added phantom
-        competition without any compensating benefit (more forced new/short blocks).
-        Set lookahead_window=1 to reproduce plain one-trip-at-a-time greedy."""
+
+
+    def _solve_bipartite(self, trips_group, vehicle_type, trip_shifting):
+        """Iteratively matches and chains a homogeneous group of trips. Each round:
+        run the exact bipartite matching on whatever trips remain unassigned, then
+        walk the resulting chains in start-time order. The moment any chain hits an
+        infeasible link (only possible for electric, via battery/SoC), that chain's
+        successfully-built prefix is finalized and set aside, and EVERYTHING else not
+        yet finalized - the rest of that chain, plus every other chain from this same
+        matching, touched or not - goes back into the pool for a fresh matching next
+        round, rather than committing to a chain structure that turned out to be
+        wrong partway through.
+
+        For conventional/hydrogen this always completes in a single round: the
+        chain-aware check used while walking is identical to the pairwise check the
+        matching itself used, so no chain can ever fail partway through.
+
+        Returns a list of Block objects (depot_id not yet set - solve() assigns
+        that afterward)."""
+        remaining = list(trips_group)
+        finalized_blocks: list[Block] = []
+
+        while remaining:
+            remaining.sort(key=lambda t: t.start_time)
+            chains = self._match_chains(remaining, vehicle_type, trip_shifting)
+
+            split_happened = False
+            for chain in chains:
+                block, consumed, hit_infeasible = self._walk_chain_with_repair(
+                    chain, vehicle_type, trip_shifting
+                )
+                finalized_blocks.append(block)
+                remaining = [t for t in remaining if t.id not in consumed]
+                if hit_infeasible:
+                    split_happened = True
+                    break
+
+            if not split_happened:
+                break
+
+        return finalized_blocks
+
+    def _match_chains(self, trips_group, vehicle_type, trip_shifting):
+        """Run the bipartite matching only (no Block construction, no repair) and
+        return the resulting chains as lists of Trip objects in chain order.
+        Chain-start order is sorted by trip start time for determinism."""
+        import scipy.sparse as sp
+        from scipy.sparse.csgraph import min_weight_full_bipartite_matching
+
+        n = len(trips_group)
+        if n == 0:
+            return []
+
+        DUMMY_COST = 1e6
+        FALLBACK_COST = 1e6
+        COST_EPSILON = 1e-6
+
+        rows, cols, data = [], [], []
+        for i, prev_trip in enumerate(trips_group):
+            for j, trip in enumerate(trips_group):
+                if i == j:
+                    continue
+                if trip.start_time < prev_trip.end_time:
+                    continue
+                result = self._evaluate_trip_pair(
+                    prev_trip, trip, prev_trip.end_time, vehicle_type, trip_shifting
+                )
+                if result is not None:
+                    cost, _shift, _deadhead_km = result
+                    rows.append(i)
+                    cols.append(j)
+                    data.append(cost + COST_EPSILON)
+
+        for i in range(n):
+            rows.append(i); cols.append(n + i); data.append(DUMMY_COST)
+            rows.append(n + i); cols.append(i); data.append(DUMMY_COST)
+
+        for a in range(n):
+            base = n + a
+            rows.extend([base] * n)
+            cols.extend(range(n, 2 * n))
+            data.extend([FALLBACK_COST] * n)
+
+        size = 2 * n
+        matrix = sp.csr_matrix((data, (rows, cols)), shape=(size, size))
+        row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
+
+        successor = {int(r): int(c) for r, c in zip(row_ind, col_ind) if r < n and c < n}
+        has_predecessor = set(successor.values())
+        chain_starts = sorted(
+            (i for i in range(n) if i not in has_predecessor),
+            key=lambda i: trips_group[i].start_time,
+        )
+
+        chains = []
+        for start in chain_starts:
+            chain_indices = []
+            idx = start
+            while idx is not None:
+                chain_indices.append(idx)
+                idx = successor.get(idx)
+            chains.append([trips_group[i] for i in chain_indices])
+
+        return chains
+
+    def _walk_chain_with_repair(self, chain, vehicle_type, trip_shifting):
+        """Walk one chain trip-by-trip, building a Block with the chain-aware
+        feasibility check. Stops at the FIRST infeasible link rather than starting a
+        fresh sub-block and continuing down the rest of this (now-stale) chain -
+        the caller re-runs the matching on everything not yet finalized instead.
+        Returns (block, consumed_trip_ids, hit_infeasible)."""
+        block = None
+        consumed = set()
+
+        for trip in chain:
+            if block is None:
+                block = Block(id="", depot_id="", vehicle_type=vehicle_type)
+                block.add_trip(ScheduledTrip(
+                    trip_id=trip.id,
+                    scheduled_start_time=trip.start_time,
+                    scheduled_end_time=trip.end_time,
+                ))
+                consumed.add(trip.id)
+                continue
+
+            result = self._evaluate_trip_for_block(trip, block, trip_shifting)
+            if result is None:
+                return block, consumed, True
+
+            cost, shift, last_scheduled = result
+            scheduled_trip = ScheduledTrip(
+                trip_id=trip.id,
+                scheduled_start_time=trip.start_time + shift,
+                scheduled_end_time=trip.end_time + shift,
+            )
+            block.add_trip(scheduled_trip)
+            consumed.add(trip.id)
+            if vehicle_type == VehicleType.ELECTRIC:
+                idle_start = last_scheduled.scheduled_end_time + cost
+                idle_end = scheduled_trip.scheduled_start_time
+                block.try_charge_at_stop(self.instance, trip.origin_stop, idle_start, idle_end)
+
+        return block, consumed, False
+
+    def solve(self, trip_shifting: bool = False) -> Solution:
+        """Every vehicle type is chained via _solve_bipartite: an exact minimum-block
+        matching for conventional/hydrogen, and an optimistic-match-then-repair
+        matching for electric (see _solve_bipartite's docstring)."""
 
         solution = Solution(instance=self.instance)
-
-        trips = self.instance.get_trips_sorted_by_start_time()
-        n = len(trips)
-        window_size = max(1, lookahead_window)
-
-        blocks: list[Block] = []
         next_block_id = 1
         block_count_by_type: dict[VehicleType, int] = {}
 
-        idx = 0
-        while idx < n:
-            window = trips[idx: idx + window_size]
+        trips_by_type: dict[VehicleType, list] = {}
+        for trip in self.instance.get_trips_sorted_by_start_time():
+            preferred_type = self._preferred_vehicle_type(trip)
+            trips_by_type.setdefault(preferred_type, []).append(trip)
 
-            # ---- evaluate every (trip, block) pair in this batch, against
-            #      block state as it stood BEFORE this batch (no staleness,
-            #      since each block can be claimed by at most one trip below) ----
-            candidates = []
-            for w_trip in window:
-                preferred_type = self._preferred_vehicle_type(w_trip)
-                for block in blocks:
-                    if block.vehicle_type != preferred_type:
-                        continue
-                    result = self._evaluate_trip_for_block(w_trip, block, trip_shifting)
-                    if result is not None:
-                        cost, shift, last_scheduled = result
-                        candidates.append((cost, w_trip, block, shift, last_scheduled))
+        all_blocks: list[Block] = []
 
-            candidates.sort(key=lambda c: (c[0], c[4].scheduled_end_time))
+        for vehicle_type, trips_group in trips_by_type.items():
+            blocks = self._solve_bipartite(trips_group, vehicle_type, trip_shifting)
 
-            claimed_trip_ids = set()
-            claimed_block_ids = set()
-            assignment = {}  # trip.id -> (block, shift, last_scheduled, cost)
-            for cost, w_trip, block, shift, last_scheduled in candidates:
-                if w_trip.id in claimed_trip_ids or id(block) in claimed_block_ids:
+            params = self.instance.get_vehicle_type_params(vehicle_type)
+            max_blocks = params.max_virtual_blocks if params else None
+
+            for block in blocks:
+                current_count = block_count_by_type.get(vehicle_type, 0)
+
+                if max_blocks is not None and current_count >= max_blocks:
+                    for scheduled in block.scheduled_trips:
+                        solution.unassigned_trip_ids.append(scheduled.trip_id)
                     continue
-                assignment[w_trip.id] = (block, shift, last_scheduled, cost)
-                claimed_trip_ids.add(w_trip.id)
-                claimed_block_ids.add(id(block))
 
-            # ---- commit every trip in this batch, in time order, so new
-            #      blocks open in chronological order and gap/shift math stays sound ----
-            for w_trip in window:
-                match = assignment.get(w_trip.id)
-                if match is not None:
-                    block, shift, last_scheduled, cost = match
-                    scheduled_trip = ScheduledTrip(
-                        trip_id=w_trip.id,
-                        scheduled_start_time=w_trip.start_time + shift,
-                        scheduled_end_time=w_trip.end_time + shift,
-                    )
-                    block.add_trip(scheduled_trip)
-                    if block.vehicle_type == VehicleType.ELECTRIC:
-                        idle_start = last_scheduled.scheduled_end_time + cost
-                        idle_end = scheduled_trip.scheduled_start_time
-                        block.try_charge_at_stop(self.instance, w_trip.origin_stop, idle_start, idle_end)
-                else:
-                    scheduled_trip = ScheduledTrip(
-                        trip_id=w_trip.id,
-                        scheduled_start_time=w_trip.start_time,
-                        scheduled_end_time=w_trip.end_time,
-                    )
-                    preferred_type = self._preferred_vehicle_type(w_trip)
-                    params = self.instance.get_vehicle_type_params(preferred_type)
-                    max_blocks = params.max_virtual_blocks if params else None
-                    current_count = block_count_by_type.get(preferred_type, 0)
+                depot = self._select_home_depot(vehicle_type)
+                if depot is None:
+                    for scheduled in block.scheduled_trips:
+                        solution.unassigned_trip_ids.append(scheduled.trip_id)
+                    continue
 
-                    if max_blocks is not None and current_count >= max_blocks:
-                        solution.unassigned_trip_ids.append(w_trip.id)
-                        continue
+                block.id = f"block_{next_block_id}"
+                block.depot_id = depot.id
+                next_block_id += 1
+                all_blocks.append(block)
+                block_count_by_type[vehicle_type] = current_count + 1
 
-                    depot = self._select_home_depot(preferred_type)
-                    if depot is None:
-                        solution.unassigned_trip_ids.append(w_trip.id)
-                        continue
-
-                    new_block = Block(id=f"block_{next_block_id}", depot_id=depot.id, vehicle_type=preferred_type)
-                    next_block_id += 1
-                    new_block.add_trip(scheduled_trip)
-                    blocks.append(new_block)
-                    block_count_by_type[preferred_type] = current_count + 1
-
-            idx += window_size
-
-        for block in blocks:
+        for block in all_blocks:
             solution.add_block(block)
             if not block.can_return_to_depot(self.instance):
                 print(f"warning: {block.id} cannot return to its home depot ({block.depot_id})")
@@ -230,3 +329,5 @@ class Solver:
 
         solution.validate_trip_assignment_integrity()
         return solution
+
+

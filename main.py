@@ -18,9 +18,9 @@ objective = ObjectiveFunction(weights)
 
 solver = Solver(instance, objective)
 start_time = time.time()
-solution = solver.solve(trip_shifting=True, lookahead_window=21)
+solution = solver.solve(trip_shifting=False)
 elapsed = time.time() - start_time
 
 print(f"runtime: {elapsed:.2f} seconds")
 solution.print_detailed_summary(objective)
-solution.export_gantt_json(r"C:\Users\emilie\IdeaProjects\public-transport\PublicTransport\results\gantt_data_shift20.json")
+solution.export_gantt_json(r"C:\Users\emilie\IdeaProjects\public-transport\PublicTransport\results\gantt_rematching_noshift.json")
