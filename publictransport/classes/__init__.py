@@ -1,5 +1,4 @@
 from .vehicle_type import VehicleType
-from .vehicle import Vehicle
 from .trip import Trip, ScheduledTrip
 from .depot import Depot
 from .line import Line

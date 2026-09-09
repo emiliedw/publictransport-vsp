@@ -56,6 +56,103 @@ class Solution:
             for (depot_id, vehicle_type), shortfall in gaps.items():
                 print(f"  depot {depot_id}, {vehicle_type.name}: short by {shortfall} vehicle(s)")
 
+    def summary_dict(self, objective: "ObjectiveFunction" = None) -> dict:
+        from .classes.vehicle_type import VehicleType
+
+        blocks = list(self.blocks.values())
+        num_blocks = len(blocks)
+        num_trips = len(self.instance.trips)
+
+        if num_blocks == 0:
+            return {"totalBlocks": 0, "totalTripsInInstance": num_trips}
+
+        block_sizes = [len(b.scheduled_trips) for b in blocks]
+        durations_min = [b.duration_seconds() / 60 for b in blocks]
+
+        type_counts = {}
+        for b in blocks:
+            type_counts[b.vehicle_type.name] = type_counts.get(b.vehicle_type.name, 0) + 1
+
+        depot_counts = {}
+        for b in blocks:
+            depot = self.instance.get_depot(b.depot_id)
+            name = depot.name if depot else b.depot_id
+            depot_counts[name] = depot_counts.get(name, 0) + 1
+
+        total_deadheads = 0
+        total_deadhead_km = 0.0
+        for b in blocks:
+            prev_trip = None
+            for scheduled in b.scheduled_trips:
+                trip = self.instance.get_trip(scheduled.trip_id)
+                if prev_trip is not None and prev_trip.destination_stop != trip.origin_stop:
+                    dh = self.instance.get_deadhead(prev_trip.destination_stop, trip.origin_stop)
+                    if dh is not None:
+                        total_deadheads += 1
+                        total_deadhead_km += dh.distance_km
+                prev_trip = trip
+
+        total_line_changes = sum(b.count_line_changes(self.instance) for b in blocks)
+        total_line_change_penalty = sum(b.line_change_penalty(self.instance) for b in blocks)
+
+        total_shift = sum(b.total_shift_seconds(self.instance) for b in blocks)
+        shifted_trip_count = sum(
+            1 for b in blocks for st in b.scheduled_trips
+            if st.scheduled_start_time != self.instance.get_trip(st.trip_id).start_time
+        )
+
+        electric_blocks = [b for b in blocks if b.vehicle_type == VehicleType.ELECTRIC]
+        total_kwh = 0.0
+        if electric_blocks:
+            params = self.instance.get_vehicle_type_params(VehicleType.ELECTRIC)
+            if params:
+                total_kwh = sum(
+                    b.energy_consumed_kwh(self.instance, params.consumption_profile)
+                    for b in electric_blocks
+                )
+
+        result = {
+            "totalTripsInInstance": num_trips,
+            "tripsAssigned": len(self.assigned_trip_ids),
+            "unassignedTrips": len(self.unassigned_trip_ids),
+            "totalBlocks": num_blocks,
+            "tripsPerBlock": {
+                "min": min(block_sizes),
+                "avg": sum(block_sizes) / num_blocks,
+                "max": max(block_sizes),
+            },
+            "blockDurationMinutes": {
+                "min": min(durations_min),
+                "avg": sum(durations_min) / num_blocks,
+                "max": max(durations_min),
+            },
+            "blocksByVehicleType": type_counts,
+            "blocksByDepot": depot_counts,
+            "deadheadTrips": total_deadheads,
+            "totalDeadheadKm": total_deadhead_km,
+            "lineChangesTotal": total_line_changes,
+            "avgLineChangesPerBlock": total_line_changes / num_blocks,
+            "lineChangePenalty": total_line_change_penalty,
+            "blocksWithDirectionViolations": sum(1 for b in blocks if b.has_direction_violation(self.instance)),
+            "blocksThatCannotReturnToDepot": sum(1 for b in blocks if not b.can_return_to_depot(self.instance)),
+            "blocksBelowMinimumRequirements": sum(1 for b in blocks if not b.meets_minimum_requirements(self.instance)),
+            "shortBlocks": sum(1 for b in blocks if b.is_short_block(self.instance)),
+            "singleTripBlocks": sum(1 for b in blocks if b.is_single_trip_block()),
+            "shiftedTrips": shifted_trip_count,
+            "totalShiftMinutes": total_shift / 60,
+            "avgShiftSeconds": (total_shift / shifted_trip_count) if shifted_trip_count else 0.0,
+            "environmentalKwh": total_kwh,
+        }
+
+        if objective is not None:
+            result["objectiveScore"] = objective.evaluate(self)
+            result["environmentalKwhObjective"] = objective.environmental_kpi(self)
+
+        return result
+
+
+
+
     def print_detailed_summary(self, objective: "ObjectiveFunction" = None) -> None:
         """A fuller report than print_summary(): block stats, deadheads, line changes,
         constraint sanity checks, trip shifting, electric fleet KPIs, and (optionally)
@@ -75,6 +172,9 @@ class Solution:
         print(f"Trips assigned to blocks:     {len(self.assigned_trip_ids)}")
         print(f"Unassigned trips:             {len(self.unassigned_trip_ids)}")
         print(f"Total blocks:                 {num_blocks}")
+        num_one_trip_blocks = sum(1 for b in self.blocks.values() if b.is_single_trip_block())
+        print(f"one-trip blocks: {num_one_trip_blocks}")
+
 
         if num_blocks == 0:
             print("\nNo blocks to summarize.")
@@ -236,6 +336,7 @@ class Solution:
                     "trip": f"{scheduled.trip_id} (Line {trip.line_id})",
                     "startDate": to_iso(scheduled.scheduled_start_time),
                     "endDate": to_iso(scheduled.scheduled_end_time),
+                    "originalStartDate": to_iso(trip.start_time),
                     "isDeadhead": False,
                     "description": (
                         f"Line {trip.line_id}, {trip.origin_stop} -> {trip.destination_stop}, "
@@ -249,11 +350,16 @@ class Solution:
         return records
 
 
-    def export_gantt_json(self, path: str = "gantt_data.json", base_date: str = "2026-01-01") -> None:
-        """Write to_gantt_data() output to a JSON file, ready to paste into the Observable `tasks` cell."""
+    def export_gantt_json(self, path: str = "gantt_data.json", base_date: str = "2026-01-01",
+                          objective: "ObjectiveFunction" = None) -> None:
+        """Write {summary, trips} to a JSON file for the Observable notebook."""
         import json
-        data = self.to_gantt_data(base_date=base_date)
+        trips = self.to_gantt_data(base_date=base_date)
+        payload = {
+            "summary": self.summary_dict(objective=objective),
+            "trips": trips,
+        }
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        print(f"exported {len(data)} records ({sum(not r['isDeadhead'] for r in data)} trips, "
-              f"{sum(r['isDeadhead'] for r in data)} deadheads) to {path}")
+            json.dump(payload, f, indent=2)
+        print(f"exported {len(trips)} records ({sum(not r['isDeadhead'] for r in trips)} trips, "
+              f"{sum(r['isDeadhead'] for r in trips)} deadheads) to {path}")
