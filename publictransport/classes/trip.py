@@ -15,7 +15,7 @@ class Trip:
     distance_km: float = 0.0
     min_break_seconds: Optional[int] = None
     max_break_seconds: Optional[int] = None
-    max_shift_minutes: int = 5
+    max_shift_minutes: int = 10
     vehicle_type_preference: dict[VehicleType, int] = field(default_factory=dict)
 
 

@@ -42,7 +42,8 @@ class ProblemInstance:
     # ---- hard constraint: line changes ----
     max_line_changes_per_block: Optional[int] = None       # lzmax
     line_change_preferences: dict[tuple[str, str], float] = field(default_factory=dict)
-    line_change_penalty_weight_seconds: float = 10.0
+    line_change_penalty_weight_seconds: float = 50.0
+    deadhead_penalty_weight: float = 60.0
 
     # ---- registration ----
 

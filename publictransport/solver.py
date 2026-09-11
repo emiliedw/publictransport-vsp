@@ -134,8 +134,29 @@ class Solver:
 
             if gap >= effective_min_gap:
                 required_shift = 0
-                if not is_split_block_break and tmax is not None and break_duration > tmax:
-                    continue
+                if not is_split_block_break:
+                    tightest_limit = min(
+                        (limit for limit in (
+                            tmax,
+                            self.instance.max_single_trip_break_seconds,
+                            self.instance.br_max_seconds
+                            if self.instance.br_max_seconds is not None
+                               and not self.instance.is_depot_return_compliant(last_trip.destination_stop, depot)
+                            else None,
+                        ) if limit is not None),
+                        default=None,
+                    )
+                    if tightest_limit is not None and break_duration > tightest_limit:
+                        excess = break_duration - tightest_limit
+                        if self.instance.timetable_zones is not None:
+                            max_earlier_zone, _ = self.instance.timetable_zones.max_shift_without_crossing(trip.start_time)
+                        else:
+                            max_earlier_zone = max_shift_sec
+                        earlier_limit = min(max_shift_sec, max_earlier_zone)
+                        if excess > earlier_limit or gap - excess < effective_min_gap:
+                            continue
+                        required_shift = -excess
+                        break_duration -= excess   # <-- keep it in sync with the shift just applied
             else:
                 required_shift = effective_min_gap - gap
                 if self.instance.timetable_zones is not None:
@@ -146,7 +167,7 @@ class Solver:
                 if required_shift > later_limit:
                     continue
 
-            # hard: max single-trip break (pbmax), unless it's a legitimate split-block break
+
             if (not is_split_block_break
                     and self.instance.max_single_trip_break_seconds is not None
                     and break_duration > self.instance.max_single_trip_break_seconds):
@@ -163,7 +184,14 @@ class Solver:
                     continue
 
             line_change_penalty = self.instance.get_line_change_penalty(last_trip.line_id, trip.line_id)
-            total_cost = travel_cost + self.instance.line_change_penalty_weight_seconds * line_change_penalty
+            total_cost = (
+                     travel_cost
+                    + self.instance.line_change_penalty_weight_seconds * line_change_penalty
+                    + self.instance.deadhead_penalty_weight * deadhead_km
+            )
+
+
+
 
             if best_block is None or total_cost < best_total_cost:
                 best_block = block
@@ -187,7 +215,6 @@ class Solver:
             block.try_charge_at_stop(self.instance, trip.origin_stop, idle_start, idle_end)
 
     # ---- short-block elimination (hard: >= instance.min_block_trips) ----
-
     def _eliminate_short_blocks(
             self, blocks: list[Block], unassigned_trip_ids: list[str], trip_shifting: bool
     ) -> list[Block]:
