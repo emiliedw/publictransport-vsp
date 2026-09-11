@@ -1,5 +1,4 @@
 from publictransport.io.loader import load_from_xml
-from publictransport.objective import ObjectiveWeights, ObjectiveFunction
 from publictransport.solver import Solver
 import time
 
@@ -13,14 +12,11 @@ print("vehicle type params loaded:", list(instance.vehicle_type_params.keys()))
 for depot in instance.depots.values():
     print(f"  {depot.name}: {depot.fleet_capacity}")
 
-weights = ObjectiveWeights()
-objective = ObjectiveFunction(weights)
-
-solver = Solver(instance, objective)
+solver = Solver(instance)
 start_time = time.time()
 solution = solver.solve(trip_shifting=False)
 elapsed = time.time() - start_time
 
 print(f"runtime: {elapsed:.2f} seconds")
-solution.print_detailed_summary(objective)
-solution.export_gantt_json(r"C:\Users\emilie\IdeaProjects\public-transport\PublicTransport\results\gantt_rematching_noshift.json")
+solution.print_detailed_summary()
+solution.export_gantt_json(r"C:\Users\emilie\IdeaProjects\public-transport\PublicTransport\results\gantt_seq_noshift.json")

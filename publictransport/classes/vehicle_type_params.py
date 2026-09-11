@@ -1,9 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
-
 from .vehicle_type import VehicleType
 from .consumption_model import ConsumptionProfile
-
 
 @dataclass
 class VehicleTypeParams:
@@ -17,7 +15,6 @@ class VehicleTypeParams:
     min_break_seconds: int = 0
     max_deadhead_distance_km: Optional[float] = None
     max_break_seconds: Optional[int] = None
-    max_soc_before_charging_fraction: Optional[float] = None   # ermax — still unsourced, kept dormant, see note
     init_load_fraction: Optional[float] = None
 
     def min_soc_floor_kwh(self) -> float:

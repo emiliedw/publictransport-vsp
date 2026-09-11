@@ -13,48 +13,36 @@ from .classes.timetable_zone import TimetableZones
 
 @dataclass
 class ProblemInstance:
-    # ---- core registries ----
     depots: dict[str, Depot] = field(default_factory=dict)
     lines: dict[str, Line] = field(default_factory=dict)
     trips: dict[str, Trip] = field(default_factory=dict)
     chargers: dict[str, Charger] = field(default_factory=dict)
-    deadheads: dict[tuple[str, str], DeadheadTrip] = field(default_factory=dict)  # (origin, destination) -> DeadheadTrip
+    deadheads: dict[tuple[str, str], DeadheadTrip] = field(default_factory=dict)
     vehicle_type_params: dict[VehicleType, VehicleTypeParams] = field(default_factory=dict)
 
-    # ---- operating day / timetable zones ----
     operating_day_start_seconds: int = 5 * 3600
     timetable_zones: Optional[TimetableZones] = None
 
-    # ---- deadhead speed model ----
-    base_deadhead_speed_kmh: float = 25.0   # assumed operating speed for empty runs
-    deadhead_speed_coefficients: dict[int, float] = field(default_factory=dict)  # zone_index -> multiplier
+    base_deadhead_speed_kmh: float = 25.0
+    deadhead_speed_coefficients: dict[int, float] = field(default_factory=dict)
 
-    # ---- charger occupancy ----
-    charger_bookings: dict[str, list[tuple[int, int]]] = field(default_factory=dict)  # charger_id -> [(start, end)]
+    charger_bookings: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
 
-    # ---- block sizing thresholds ----
-    min_block_trips: int = 1
+    min_block_trips: int = 4
     min_block_duration_seconds: int = 0
     short_block_trip_threshold: int = 2
 
-    # ---- breaks ----
+    # ---- hard constraints: breaks ----
     split_block_min_break_seconds: int = 90 * 60
     max_single_trip_break_seconds: Optional[int] = None   # pbmax
-    br_max_seconds: Optional[int] = None                   # break length that triggers depot-return rule
+    br_max_seconds: Optional[int] = None                   # break length that forces depot return
     depot_return_policy: int = 1                           # 1 = home depot, 2 = any depot, 3 = secured terminus
     stops_with_secured_parking: set[str] = field(default_factory=set)
 
-    # ---- statutory driver breaks ----
-    stops_with_driver_facilities: set[str] = field(default_factory=set)
-    duty_break_thresholds: list[tuple[int, int]] = field(default_factory=lambda: [
-        (6 * 3600, 30 * 60),   # over 6h duty -> 30 min break required
-        (8 * 3600, 45 * 60),   # over 8h duty -> 45 min break required
-    ])
-    min_break_component_seconds: int = 15 * 60   # smallest break segment that counts (allows 3x15, 30+15, etc.)
-
-    # ---- line changes ----
-    max_line_changes_per_block: Optional[int] = None   # lzmax
-    line_change_preferences: dict[tuple[str, str], float] = field(default_factory=dict)  # (from_line, to_line) -> [0,10]
+    # ---- hard constraint: line changes ----
+    max_line_changes_per_block: Optional[int] = None       # lzmax
+    line_change_preferences: dict[tuple[str, str], float] = field(default_factory=dict)
+    line_change_penalty_weight_seconds: float = 10.0
 
     # ---- registration ----
 
@@ -66,7 +54,6 @@ class ProblemInstance:
 
     def add_trip(self, trip: Trip) -> None:
         self.trips[trip.id] = trip
-
 
     def add_charger(self, charger: Charger) -> None:
         self.chargers[charger.id] = charger
@@ -145,10 +132,7 @@ class ProblemInstance:
     def book_charger(self, charger_id: str, window_start: int, window_end: int) -> None:
         self.charger_bookings.setdefault(charger_id, []).append((window_start, window_end))
 
-    # ---- break intervals ----
-
     def get_break_interval(self, trip, vehicle_type) -> tuple[int, Optional[int]]:
-        """Resolve (tmin, tmax) for the break after a trip: trip override > line default > vehicle-type fallback."""
         if trip.min_break_seconds is not None or trip.max_break_seconds is not None:
             return trip.min_break_seconds or 0, trip.max_break_seconds
 
@@ -161,9 +145,18 @@ class ProblemInstance:
             return 0, None
         return params.min_break_seconds, params.max_break_seconds
 
-    # ---- line-change preferences ----
+    # ---- depot-return compliance for breaks longer than br_max (hard constraint) ----
 
-    line_change_penalty_weight_seconds: float = 0.0
+    def is_depot_return_compliant(self, stop_id: str, home_depot: Optional[Depot]) -> bool:
+        if self.depot_return_policy == 1:
+            return home_depot is not None and stop_id == home_depot.location_stop_id
+        if self.depot_return_policy == 2:
+            return self.is_at_any_depot(stop_id)
+        if self.depot_return_policy == 3:
+            return stop_id in self.stops_with_secured_parking
+        return True
+
+    # ---- line-change preferences ----
 
     def get_line_change_penalty(self, from_line_id: str, to_line_id: str) -> float:
         if from_line_id == to_line_id:
