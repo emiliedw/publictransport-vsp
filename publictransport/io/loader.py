@@ -16,9 +16,6 @@ from ..classes.consumption_model import ConsumptionProfile
 
 
 def _classify_vehicle_type_name(name: str) -> VehicleType:
-    """Map a Polish vehicle-type model name to the broad VehicleType enum.
-    No hydrogen models are present in this dataset; add a 'wodor'/'hydrogen'
-    substring check here if that changes."""
     lowered = (name or "").lower()
     if "elektryczn" in lowered:
         return VehicleType.ELECTRIC
@@ -28,23 +25,12 @@ def _classify_vehicle_type_name(name: str) -> VehicleType:
 
 
 def _estimate_length_m(name: str) -> float:
-    """Length isn't in the XML at all - this is a naming-convention guess
-    ('przegubowy' = articulated ~18m, otherwise short ~12m), used only to
-    fill VehicleTypeParams.length_m, which the solver doesn't currently use
-    for any constraint. Replace with real figures if you have them."""
     lowered = (name or "").lower()
     return 18.0 if "przegubow" in lowered else 12.0
 
 
 def _infer_directions(instance: ProblemInstance) -> None:
-    """Infer trip.direction ('0'/'1') from the dominant origin->destination stop-pair per line,
-    since the Katowice export has no PatternId/DirectionId field. A trip whose (origin, destination)
-    matches neither of its line's two dominant patterns is left as '' (unknown), which safely
-    disables the same-direction hard constraint for just that trip rather than misclassifying it.
-
-    Also infers is_circular: per the spec, a circular line is one that "always operates in the
-    same direction." If a line has no reverse-pair trips at all, every trip on it shares one
-    direction by definition, so it's flagged circular here."""
+    # load the trips
     trips_by_line: dict[str, list[Trip]] = defaultdict(list)
     for trip in instance.trips.values():
         trips_by_line[trip.line_id].append(trip)
@@ -73,13 +59,12 @@ def _infer_directions(instance: ProblemInstance) -> None:
 
 
 def load_from_xml(xml_path: str) -> ProblemInstance:
-    """Parse an XML export and build a ProblemInstance from it."""
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
     instance = ProblemInstance()
 
-    # ---- 1. Vehicle type catalogue: guid -> name -> broad VehicleType ----
+    # 1: Vehicle types
     vehicle_type_names: dict[str, str] = {}
     for vt_el in root.findall(".//VehicleTypeList/VehicleTypeDto"):
         vt_id = vt_el.findtext("Id")
@@ -90,9 +75,7 @@ def load_from_xml(xml_path: str) -> ProblemInstance:
         guid: _classify_vehicle_type_name(name) for guid, name in vehicle_type_names.items()
     }
 
-    # ---- 2. Chargers, and a home_id -> stop_id map (depots have no direct
-    #         stop-location field of their own; we infer it from whichever
-    #         charger location was tagged with that HomeId) ----
+    # 2. Chargers, and a home_id -> stop_id map
     home_location_map: dict[str, str] = {}
     for chg_el in root.findall(".//ChargerLocationList/ChargerLocationDto"):
         location_id = chg_el.findtext("LocationId")
@@ -111,7 +94,7 @@ def load_from_xml(xml_path: str) -> ProblemInstance:
             if home_id:
                 home_location_map[home_id] = location_id
 
-    # ---- 3. Trips (with per-trip vehicle-type compatibility) ----
+    # 3. Trips with vehicle-type compatibility
     line_names: dict[str, str] = {}
 
     for trip_el in root.findall(".//TripDefDto"):
@@ -128,7 +111,7 @@ def load_from_xml(xml_path: str) -> ProblemInstance:
                 if broad is not None:
                     vehicle_type_preference[broad] = 10
         else:
-            # No restriction stated in the data -> every type equally compatible.
+            # No restriction stated in the data -> every type  compatible.
             vehicle_type_preference = {vt: 10 for vt in VehicleType}
 
         trip = Trip(
@@ -149,7 +132,7 @@ def load_from_xml(xml_path: str) -> ProblemInstance:
         # NOTE: circularity is inferred below in _infer_directions(), since it isn't
         # present in this XML export directly.
 
-    # ---- 4. Deadheads ----
+    #  4. Deadheads
     for dh_el in root.findall(".//TripTechnicalMatrixDto"):
         origin = dh_el.findtext("StartLocationId")
         destination = dh_el.findtext("EndLocationId")
@@ -167,9 +150,8 @@ def load_from_xml(xml_path: str) -> ProblemInstance:
         )
         instance.add_deadhead(deadhead)
 
-    # ---- 5. Depots (fleet capacity per home) and VehicleTypeParams
-    #         (aggregated across every specific model within a broad type -
-    #         see the note at the end of this function) ----
+    #  5. Depots and VehicleTypeParams
+
     depot_fleet_totals: dict[str, dict] = {}  # home_id -> {"name":, "fleet_capacity": {}}
     type_totals: dict[VehicleType, dict] = defaultdict(lambda: {
         "count": 0, "capacity_kwh_sum": 0.0, "consumption_sum": 0.0,
@@ -216,7 +198,8 @@ def load_from_xml(xml_path: str) -> ProblemInstance:
             fleet_capacity=entry["fleet_capacity"],
         ))
 
-    ELECTRIC_MIN_SOC_FRACTION = 0.15
+    # HOW MUCH BATTERY MUST A ELECTRIC VEHICLE HOLD
+    ELECTRIC_MIN_SOC_FRACTION = 0.0
 
     for broad, totals in type_totals.items():
         if totals["count"] == 0:
@@ -235,7 +218,7 @@ def load_from_xml(xml_path: str) -> ProblemInstance:
             min_soc_fraction=(ELECTRIC_MIN_SOC_FRACTION if broad == VehicleType.ELECTRIC else None),
         )
         instance.add_vehicle_type_params(params)
-    # ---- 6. Line-change preferences ----
+    #  6. Line-change preferences
     for lcp_el in root.findall(".//LineChangePreferenceList/LineChangePreferenceDto"):
         source_line = lcp_el.findtext("SourceLineId")
         dest_line = lcp_el.findtext("DestinationLineId")

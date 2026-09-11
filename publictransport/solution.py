@@ -363,3 +363,5 @@ class Solution:
             json.dump(payload, f, indent=2)
         print(f"exported {len(trips)} records ({sum(not r['isDeadhead'] for r in trips)} trips, "
               f"{sum(r['isDeadhead'] for r in trips)} deadheads) to {path}")
+
+

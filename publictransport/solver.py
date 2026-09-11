@@ -136,44 +136,52 @@ class Solver:
 
 
     def _solve_bipartite(self, trips_group, vehicle_type, trip_shifting):
-        """Iteratively matches and chains a homogeneous group of trips. Each round:
-        run the exact bipartite matching on whatever trips remain unassigned, then
-        walk the resulting chains in start-time order. The moment any chain hits an
-        infeasible link (only possible for electric, via battery/SoC), that chain's
-        successfully-built prefix is finalized and set aside, and EVERYTHING else not
-        yet finalized - the rest of that chain, plus every other chain from this same
-        matching, touched or not - goes back into the pool for a fresh matching next
-        round, rather than committing to a chain structure that turned out to be
-        wrong partway through.
+        ordered = sorted(trips_group, key=lambda t: t.start_time)
+        chains = self._match_chains(ordered, vehicle_type, trip_shifting)
 
-        For conventional/hydrogen this always completes in a single round: the
-        chain-aware check used while walking is identical to the pairwise check the
-        matching itself used, so no chain can ever fail partway through.
+        blocks: list[Block] = []
+        for chain in chains:
+            blocks.extend(self._walk_chain(chain, vehicle_type, trip_shifting))
+        return blocks
 
-        Returns a list of Block objects (depot_id not yet set - solve() assigns
-        that afterward)."""
-        remaining = list(trips_group)
-        finalized_blocks: list[Block] = []
+    def _walk_chain(self, chain, vehicle_type, trip_shifting):
+        """Walk one matched chain, splitting into a new Block wherever the
+        chain-aware feasibility check fails."""
+        blocks = []
+        block = None
 
-        while remaining:
-            remaining.sort(key=lambda t: t.start_time)
-            chains = self._match_chains(remaining, vehicle_type, trip_shifting)
+        for trip in chain:
+            if block is not None:
+                result = self._evaluate_trip_for_block(trip, block, trip_shifting)
+            else:
+                result = None  # force fresh-block branch below
 
-            split_happened = False
-            for chain in chains:
-                block, consumed, hit_infeasible = self._walk_chain_with_repair(
-                    chain, vehicle_type, trip_shifting
-                )
-                finalized_blocks.append(block)
-                remaining = [t for t in remaining if t.id not in consumed]
-                if hit_infeasible:
-                    split_happened = True
-                    break
+            if block is None or result is None:
+                if block is not None:
+                    blocks.append(block)
+                block = Block(id="", depot_id="", vehicle_type=vehicle_type)
+                block.add_trip(ScheduledTrip(
+                    trip_id=trip.id,
+                    scheduled_start_time=trip.start_time,
+                    scheduled_end_time=trip.end_time,
+                ))
+                continue
 
-            if not split_happened:
-                break
+            cost, shift, last_scheduled = result
+            scheduled_trip = ScheduledTrip(
+                trip_id=trip.id,
+                scheduled_start_time=trip.start_time + shift,
+                scheduled_end_time=trip.end_time + shift,
+            )
+            block.add_trip(scheduled_trip)
+            if vehicle_type == VehicleType.ELECTRIC:
+                idle_start = last_scheduled.scheduled_end_time + cost
+                idle_end = scheduled_trip.scheduled_start_time
+                block.try_charge_at_stop(self.instance, trip.origin_stop, idle_start, idle_end)
 
-        return finalized_blocks
+        if block is not None:
+            blocks.append(block)
+        return blocks
 
     def _match_chains(self, trips_group, vehicle_type, trip_shifting):
         """Run the bipartite matching only (no Block construction, no repair) and
@@ -202,10 +210,11 @@ class Solver:
                 )
                 if result is not None:
                     cost, _shift, _deadhead_km = result
+                    line_penalty = self.instance.get_line_change_penalty(prev_trip.line_id, trip.line_id)
+                    edge_weight = cost + line_penalty * self.instance.line_change_penalty_weight_seconds
                     rows.append(i)
                     cols.append(j)
-                    data.append(cost + COST_EPSILON)
-
+                    data.append(edge_weight + COST_EPSILON)
         for i in range(n):
             rows.append(i); cols.append(n + i); data.append(DUMMY_COST)
             rows.append(n + i); cols.append(i); data.append(DUMMY_COST)
@@ -238,50 +247,7 @@ class Solver:
 
         return chains
 
-    def _walk_chain_with_repair(self, chain, vehicle_type, trip_shifting):
-        """Walk one chain trip-by-trip, building a Block with the chain-aware
-        feasibility check. Stops at the FIRST infeasible link rather than starting a
-        fresh sub-block and continuing down the rest of this (now-stale) chain -
-        the caller re-runs the matching on everything not yet finalized instead.
-        Returns (block, consumed_trip_ids, hit_infeasible)."""
-        block = None
-        consumed = set()
-
-        for trip in chain:
-            if block is None:
-                block = Block(id="", depot_id="", vehicle_type=vehicle_type)
-                block.add_trip(ScheduledTrip(
-                    trip_id=trip.id,
-                    scheduled_start_time=trip.start_time,
-                    scheduled_end_time=trip.end_time,
-                ))
-                consumed.add(trip.id)
-                continue
-
-            result = self._evaluate_trip_for_block(trip, block, trip_shifting)
-            if result is None:
-                return block, consumed, True
-
-            cost, shift, last_scheduled = result
-            scheduled_trip = ScheduledTrip(
-                trip_id=trip.id,
-                scheduled_start_time=trip.start_time + shift,
-                scheduled_end_time=trip.end_time + shift,
-            )
-            block.add_trip(scheduled_trip)
-            consumed.add(trip.id)
-            if vehicle_type == VehicleType.ELECTRIC:
-                idle_start = last_scheduled.scheduled_end_time + cost
-                idle_end = scheduled_trip.scheduled_start_time
-                block.try_charge_at_stop(self.instance, trip.origin_stop, idle_start, idle_end)
-
-        return block, consumed, False
-
     def solve(self, trip_shifting: bool = False) -> Solution:
-        """Every vehicle type is chained via _solve_bipartite: an exact minimum-block
-        matching for conventional/hydrogen, and an optimistic-match-then-repair
-        matching for electric (see _solve_bipartite's docstring)."""
-
         solution = Solution(instance=self.instance)
         next_block_id = 1
         block_count_by_type: dict[VehicleType, int] = {}

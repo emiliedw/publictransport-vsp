@@ -163,6 +163,8 @@ class ProblemInstance:
 
     # ---- line-change preferences ----
 
+    line_change_penalty_weight_seconds: float = 0.0
+
     def get_line_change_penalty(self, from_line_id: str, to_line_id: str) -> float:
         if from_line_id == to_line_id:
             return 0.0
